@@ -10,11 +10,13 @@ import json
 import mimetypes
 import os
 import subprocess
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs, unquote
 
+import cache
 import scanner
 
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
@@ -26,6 +28,8 @@ _lock = threading.Lock()
 _state = {
     "state": "idle",       # idle | scanning | done | error
     "root": "",            # absolute root path of the current/last scan
+    "source": "",          # "scan" | "cache" — where the active tree came from
+    "scanned_at": 0.0,     # epoch seconds the active tree was scanned
     "files_seen": 0,
     "current_path": "",
     "elapsed": 0.0,
@@ -50,6 +54,7 @@ def _run_scan(path):
 
     try:
         tree, stats = scanner.scan(path, callback=progress)
+        scanned_at = time.time()
         with _lock:
             _tree = tree
             _root_path = os.path.abspath(path)
@@ -57,15 +62,49 @@ def _run_scan(path):
             _error_total = stats["errors"]
             _state.update({
                 "state": "done",
+                "source": "scan",
+                "scanned_at": scanned_at,
                 "files_seen": stats["files"],
                 "current_path": "",
                 "elapsed": stats["seconds"],
                 "errors": stats["errors"],
                 "message": "",
             })
+        # Cache the result without asking. The in-memory tree is what matters;
+        # a cache failure (full disk, permissions) must not break the scan.
+        try:
+            cache.save(_root_path, tree, {
+                "scanned_at": scanned_at,
+                "elapsed": stats["seconds"],
+                "errors": stats["errors"],
+                "error_paths": stats["error_paths"],
+            })
+        except OSError as exc:
+            print(f"cache: save failed: {exc}", file=sys.stderr)
     except Exception as exc:  # keep server alive on any scan failure
         with _lock:
             _state.update({"state": "error", "message": str(exc)})
+
+
+def _activate_cache(tree, meta):
+    """Install a cache-loaded tree as the active tree."""
+    global _tree, _root_path, _error_paths, _error_total
+    with _lock:
+        _tree = tree
+        _root_path = meta["root_path"]
+        _error_paths = meta["error_paths"]
+        _error_total = meta["errors"]
+        _state.update({
+            "state": "done",
+            "source": "cache",
+            "scanned_at": meta["scanned_at"],
+            "root": meta["root_path"],
+            "files_seen": meta["n_files"],
+            "current_path": "",
+            "elapsed": meta["elapsed"],
+            "errors": meta["errors"],
+            "message": "",
+        })
 
 
 def _find(path):
@@ -132,14 +171,26 @@ class Handler(BaseHTTPRequestHandler):
                     "paths": list(_error_paths),
                 })
             return
-        if parsed.path == "/api/reveal":
-            # Reveal is POST-only. A GET would be trivially triggerable by any
-            # web page via <img src="http://127.0.0.1:8765/api/reveal?path=...">,
-            # so refuse it outright instead of falling through to a 404.
+        if parsed.path == "/api/cache":
+            self._send_json({
+                "entries": cache.list_entries(),
+                "dir": cache.cache_dir(),
+            })
+            return
+        # These have side effects and are POST-only; a GET is reachable from a
+        # bare <img>/<link> tag, so refuse it here with 405.
+        if parsed.path in ("/api/reveal", "/api/cache/load", "/api/cache/clear"):
             self._send_json({"ok": False, "error": "method not allowed"},
                             status=405)
             return
         self._send_static(parsed.path)
+
+    def _bad_origin(self):
+        # Same-origin fetch does not always send Origin, so a missing one is
+        # allowed; a present, foreign Origin is a cross-site request -> reject.
+        host, port = self.server.server_address
+        origin = self.headers.get("Origin")
+        return origin is not None and origin != f"http://{host}:{port}"
 
     def _handle_node(self, parsed):
         qs = parse_qs(parsed.query)
@@ -161,7 +212,47 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/reveal":
             self._handle_reveal()
             return
+        if parsed.path == "/api/cache/load":
+            self._handle_cache_load()
+            return
+        if parsed.path == "/api/cache/clear":
+            self._handle_cache_clear()
+            return
         self.send_error(404)
+
+    def _handle_cache_load(self):
+        # Origin-checked like every side-effecting POST. The path is used ONLY
+        # to hash the cache filename; we never open an arbitrary client path.
+        if self._bad_origin():
+            self._send_json({"error": "forbidden origin"}, status=403)
+            return
+        length = int(self.headers.get("Content-Length", 0))
+        raw = self.rfile.read(length) if length else b""
+        try:
+            path = json.loads(raw or b"{}").get("path", "")
+        except (ValueError, TypeError):
+            self._send_json({"error": "bad request"}, status=400)
+            return
+        with _lock:
+            if _state["state"] == "scanning":
+                self._send_json({"error": "scan in progress"}, status=409)
+                return
+        result = cache.load(path)  # disk read + decompress, kept out of the lock
+        if result is None:
+            self._send_json({"error": "cache not found"}, status=404)
+            return
+        tree, meta = result
+        _activate_cache(tree, meta)
+        self._send_json({"ok": True, "path": meta["root_path"]})
+
+    def _handle_cache_clear(self):
+        # Origin-checked. Takes NO path: the client says "clear", not "clear
+        # this"; the server knows its own cache directory (see cache.clear_all).
+        if self._bad_origin():
+            self._send_json({"error": "forbidden origin"}, status=403)
+            return
+        deleted = cache.clear_all()
+        self._send_json({"ok": True, "deleted": deleted})
 
     def _handle_scan(self):
         length = int(self.headers.get("Content-Length", 0))
@@ -209,14 +300,10 @@ class Handler(BaseHTTPRequestHandler):
         #     shell=True and never plain `open`. Plain `open` would LAUNCH the
         #     file's associated app; `-R` only REVEALS it in Finder. That single
         #     flag is the line between a convenience and a remote-exec hole.
-        host, port = self.server.server_address
-        allowed_origin = f"http://{host}:{port}"
-
         length = int(self.headers.get("Content-Length", 0))
         raw = self.rfile.read(length) if length else b""  # drain the body
 
-        origin = self.headers.get("Origin")
-        if origin is not None and origin != allowed_origin:
+        if self._bad_origin():
             self._send_json({"ok": False, "error": "forbidden origin"},
                             status=403)
             return
