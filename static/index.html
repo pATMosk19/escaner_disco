@@ -22,11 +22,18 @@
     </div>
     <p id="progress" class="hidden"></p>
     <p id="error" class="hidden"></p>
+
+    <section id="saved-scans" class="hidden">
+      <h2>Escaneos guardados</h2>
+      <ul id="saved-list"></ul>
+      <div id="clear-cache"></div>
+    </section>
   </section>
 
   <!-- Results screen -->
   <main id="results" class="hidden">
     <nav id="breadcrumb"></nav>
+    <div id="freshness" class="hidden"></div>
     <div id="error-banner" class="hidden"></div>
     <div class="panels">
       <div id="chart-panel">
@@ -42,6 +49,8 @@
     <div id="tooltip" class="hidden"></div>
     <button id="rescan-btn">Nuevo escaneo</button>
   </main>
+
+  <div id="toast" class="hidden"></div>
 
   <script src="/static/app.js"></script>
 </body>

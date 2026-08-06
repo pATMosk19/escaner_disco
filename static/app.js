@@ -12,6 +12,8 @@ const MIN_ANGLE = 0.5;     // don't draw sectors narrower than this (degrees)
 const state = {
   rootPath: "",   // absolute root of the scan
   current: null,  // current node (centre), pruned subtree from /api/node
+  source: "",     // "scan" | "cache" — where the active tree came from
+  scannedAt: 0,   // epoch seconds the active tree was scanned
 };
 
 // --- Size formatting: base 1000, like Finder ---
@@ -404,15 +406,149 @@ async function pollProgress() {
     return;
   }
   if (s.state === "done") {
-    state.rootPath = s.root;
-    const node = await fetchNode(s.root);
-    if (!node) { prog.textContent = "El árbol no está disponible."; return; }
-    state.current = node;
-    document.getElementById("start").classList.add("hidden");
-    document.getElementById("results").classList.remove("hidden");
-    render();
-    renderBanner(s.errors);
+    await enterResults(s);
   }
+}
+
+// Show the active tree (from a fresh scan or a loaded cache) given a progress
+// state object. Reused by pollProgress and by cache loading.
+async function enterResults(s) {
+  state.rootPath = s.root;
+  state.source = s.source;
+  state.scannedAt = s.scanned_at;
+  const node = await fetchNode(s.root);
+  if (!node) {
+    document.getElementById("progress").textContent = "El árbol no está disponible.";
+    return;
+  }
+  state.current = node;
+  document.getElementById("start").classList.add("hidden");
+  document.getElementById("results").classList.remove("hidden");
+  render();
+  renderBanner(s.errors);
+  renderFreshness();
+}
+
+// --- Freshness indicator (only when the tree comes from cache) ---
+function renderFreshness() {
+  const el = document.getElementById("freshness");
+  if (state.source !== "cache") { el.classList.add("hidden"); el.textContent = ""; return; }
+  el.classList.remove("hidden");
+  el.innerHTML = `Datos del ${formatDate(state.scannedAt)} · `;
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "link-btn";
+  btn.textContent = "Rescanear";
+  btn.addEventListener("click", () => rescan(state.rootPath));
+  el.appendChild(btn);
+}
+
+function rescan(path) {
+  document.getElementById("results").classList.add("hidden");
+  document.getElementById("start").classList.remove("hidden");
+  document.getElementById("path-input").value = path;
+  startScan(path);
+}
+
+// --- Cache: saved scans on the start screen ---
+async function loadSavedScans() {
+  const section = document.getElementById("saved-scans");
+  let data;
+  try {
+    data = await (await fetch("/api/cache")).json();
+  } catch (e) {
+    section.classList.add("hidden");
+    return;
+  }
+  const entries = data.entries || [];
+  if (entries.length === 0) { section.classList.add("hidden"); return; }
+  section.classList.remove("hidden");
+
+  const ul = document.getElementById("saved-list");
+  ul.textContent = "";
+  for (const e of entries) {
+    const li = document.createElement("li");
+    const meta = `${human(e.total_size)}, ${(e.n_files || 0).toLocaleString()} archivos`;
+    li.innerHTML =
+      `<span class="ss-path">${escapeHtml(e.path)}</span>` +
+      `<span class="ss-meta">${meta}</span>` +
+      `<span class="ss-date">${formatDate(e.scanned_at)}</span>`;
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "ss-load";
+    btn.textContent = "Cargar";
+    btn.addEventListener("click", () => loadCache(e.path));
+    li.appendChild(btn);
+    ul.appendChild(li);
+  }
+  renderClearCache(entries.length, data.dir);
+}
+
+async function loadCache(path) {
+  const err = document.getElementById("error");
+  err.classList.add("hidden");
+  const r = await fetch("/api/cache/load", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path }),
+  });
+  if (!r.ok) {
+    const j = await r.json().catch(() => ({}));
+    err.textContent = j.error || `No se pudo cargar la caché (${r.status}).`;
+    err.classList.remove("hidden");
+    return;
+  }
+  const s = await (await fetch("/api/progress")).json();
+  await enterResults(s);
+}
+
+// --- Cache: clear with in-UI confirmation ---
+function renderClearCache(count, dir) {
+  const box = document.getElementById("clear-cache");
+  box.innerHTML = "";
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "link-btn danger";
+  btn.textContent = `Borrar escaneos guardados (${count})`;
+  btn.addEventListener("click", () => showClearConfirm(count, dir));
+  box.appendChild(btn);
+}
+
+function showClearConfirm(count, dir) {
+  const box = document.getElementById("clear-cache");
+  box.innerHTML =
+    `<div class="confirm">` +
+    `<p>Se borrarán <b>${count}</b> ficheros de caché de la aplicación en ` +
+    `<code>${escapeHtml(dir)}</code>. Solo se borran los ficheros de caché de ` +
+    `escáner_disco; el árbol que estés viendo <b>no</b> se pierde.</p>` +
+    `<div class="confirm-actions"></div>` +
+    `</div>`;
+  const actions = box.querySelector(".confirm-actions");
+  const cancel = document.createElement("button");
+  cancel.type = "button";
+  cancel.className = "link-btn";
+  cancel.textContent = "Cancelar";
+  cancel.addEventListener("click", () => loadSavedScans());  // re-render, default
+  const confirm = document.createElement("button");
+  confirm.type = "button";
+  confirm.className = "link-btn danger";
+  confirm.textContent = "Borrar";
+  confirm.addEventListener("click", clearCache);
+  actions.append(cancel, confirm);
+  cancel.focus();
+}
+
+async function clearCache() {
+  try {
+    const r = await fetch("/api/cache/clear", { method: "POST" });
+    const j = await r.json().catch(() => ({}));
+    if (r.ok && j.ok) showToast(`${j.deleted} escaneo(s) borrado(s).`);
+    else showToast(j.error || `Error ${r.status}`, true);
+  } catch (e) {
+    showToast("Error de red", true);
+  }
+  document.getElementById("saved-list").textContent = "";
+  document.getElementById("saved-scans").classList.add("hidden");
 }
 
 // --- Unreadable-paths banner ---
@@ -452,6 +588,25 @@ async function toggleErrorPaths() {
 }
 
 // --- Small utils ---
+function formatDate(epochSeconds) {
+  if (!epochSeconds) return "—";
+  const d = new Date(epochSeconds * 1000);
+  const date = d.toLocaleDateString("es-ES", { day: "numeric", month: "short" });
+  const time = d.toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" });
+  return `${date}, ${time}`;
+}
+
+let _toastTimer;
+function showToast(text, isError = false) {
+  const el = document.getElementById("toast");
+  el.textContent = text;
+  el.classList.toggle("error", !!isError);
+  el.classList.remove("hidden");
+  el.classList.add("show");
+  clearTimeout(_toastTimer);
+  _toastTimer = setTimeout(() => el.classList.remove("show"), 2500);
+}
+
 function truncate(s, n) { return s.length > n ? s.slice(0, n - 1) + "…" : s; }
 function escapeHtml(s) {
   return String(s).replace(/[&<>"]/g, (c) =>
@@ -478,4 +633,8 @@ document.getElementById("rescan-btn").addEventListener("click", () => {
   document.getElementById("results").classList.add("hidden");
   document.getElementById("start").classList.remove("hidden");
   document.getElementById("progress").classList.add("hidden");
+  loadSavedScans();  // a fresh scan may have added a cache entry
 });
+
+// On load, show any saved scans (nothing is loaded automatically).
+loadSavedScans();
