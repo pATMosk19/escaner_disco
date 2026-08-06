@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+*.json
+.DS_Store
+
+# Session continuation notes are kept out of the public repo.
+escaner_disco-continuacion-*.md

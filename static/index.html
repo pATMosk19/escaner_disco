@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Escáner de disco</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <!-- Start screen -->
+  <section id="start">
+    <h1>Escáner de disco</h1>
+    <div class="row">
+      <input id="path-input" type="text" value="/System/Volumes/Data"
+             spellcheck="false" autocomplete="off">
+      <button id="scan-btn">Escanear</button>
+    </div>
+    <div class="shortcuts">
+      <button data-path="~">~</button>
+      <button data-path="~/Downloads">~/Downloads</button>
+      <button data-path="~/Library">~/Library</button>
+    </div>
+    <p id="progress" class="hidden"></p>
+    <p id="error" class="hidden"></p>
+  </section>
+
+  <!-- Results screen -->
+  <main id="results" class="hidden">
+    <nav id="breadcrumb"></nav>
+    <div id="error-banner" class="hidden"></div>
+    <div class="panels">
+      <div id="chart-panel">
+        <svg id="sunburst" viewBox="0 0 1000 1000"
+             xmlns="http://www.w3.org/2000/svg"></svg>
+      </div>
+      <div id="list-panel">
+        <table id="list">
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+    <div id="tooltip" class="hidden"></div>
+    <button id="rescan-btn">Nuevo escaneo</button>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
