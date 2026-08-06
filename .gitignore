@@ -1,6 +1,9 @@
 __pycache__/
 *.pyc
 *.json
+# Cache files live in ~/Library/Application Support, but ignore them here too
+# in case the cache location is ever changed to the project dir.
+*.json.gz
 .DS_Store
 
 # Session continuation notes are kept out of the public repo.
