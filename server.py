@@ -9,6 +9,7 @@ import argparse
 import json
 import mimetypes
 import os
+import subprocess
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -131,6 +132,13 @@ class Handler(BaseHTTPRequestHandler):
                     "paths": list(_error_paths),
                 })
             return
+        if parsed.path == "/api/reveal":
+            # Reveal is POST-only. A GET would be trivially triggerable by any
+            # web page via <img src="http://127.0.0.1:8765/api/reveal?path=...">,
+            # so refuse it outright instead of falling through to a 404.
+            self._send_json({"ok": False, "error": "method not allowed"},
+                            status=405)
+            return
         self._send_static(parsed.path)
 
     def _handle_node(self, parsed):
@@ -147,9 +155,15 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         parsed = urlparse(self.path)
-        if parsed.path != "/api/scan":
-            self.send_error(404)
+        if parsed.path == "/api/scan":
+            self._handle_scan()
             return
+        if parsed.path == "/api/reveal":
+            self._handle_reveal()
+            return
+        self.send_error(404)
+
+    def _handle_scan(self):
         length = int(self.headers.get("Content-Length", 0))
         try:
             body = json.loads(self.rfile.read(length) or "{}")
@@ -172,6 +186,64 @@ class Handler(BaseHTTPRequestHandler):
             })
         threading.Thread(target=_run_scan, args=(path,), daemon=True).start()
         self._send_json({"state": "scanning"}, status=202)
+
+    def _handle_reveal(self):
+        # This is the ONLY endpoint with a side effect: it opens a Finder
+        # window for a scanned path. The server listens on 127.0.0.1 with no
+        # auth, so any web page in another browser tab can POST here. For a
+        # read-only endpoint that only leaks the tree; one that spawns a process
+        # needs a higher bar. Every check below closes a specific hole:
+        #
+        #  1. POST-only is enforced in do_GET (405): a GET is reachable from a
+        #     bare <img>/<link> tag with no script and no user gesture.
+        #  2. Origin: if the browser sent one and it is not our own page, this
+        #     is a cross-site request -> 403. A missing Origin is allowed,
+        #     because same-origin fetch/XHR does not always attach one.
+        #  3. The path must be a node the last scan produced (resolved by
+        #     walking the tree, exactly like /api/node). We never pass an
+        #     arbitrary filesystem path to `open`; only one the scan surfaced.
+        #     Anything else -> 404 and nothing runs. This is the main defense.
+        #  4. Synthetic "Otros (N elementos)" nodes have no real path behind
+        #     them -> 400.
+        #  5. Execution is `open -R` with an argument list and a timeout, never
+        #     shell=True and never plain `open`. Plain `open` would LAUNCH the
+        #     file's associated app; `-R` only REVEALS it in Finder. That single
+        #     flag is the line between a convenience and a remote-exec hole.
+        host, port = self.server.server_address
+        allowed_origin = f"http://{host}:{port}"
+
+        length = int(self.headers.get("Content-Length", 0))
+        raw = self.rfile.read(length) if length else b""  # drain the body
+
+        origin = self.headers.get("Origin")
+        if origin is not None and origin != allowed_origin:
+            self._send_json({"ok": False, "error": "forbidden origin"},
+                            status=403)
+            return
+
+        try:
+            path = json.loads(raw or b"{}").get("path", "")
+        except (ValueError, TypeError):
+            self._send_json({"ok": False, "error": "bad request"}, status=400)
+            return
+
+        with _lock:
+            node = _find(path)
+            if node is None:
+                self._send_json({"ok": False, "error": "path not in scan"},
+                                status=404)
+                return
+            if scanner._is_synthetic(node):
+                self._send_json({"ok": False, "error": "synthetic node"},
+                                status=400)
+                return
+
+        try:
+            subprocess.run(["open", "-R", path], timeout=5)
+        except (subprocess.SubprocessError, OSError) as exc:
+            self._send_json({"ok": False, "error": str(exc)}, status=500)
+            return
+        self._send_json({"ok": True})
 
 
 def main():
