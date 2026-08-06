@@ -92,8 +92,19 @@ mirar dentro". No se dibuja en el sunburst porque su tamaño es 0; darle un
 mínimo artificial falsearía el gráfico. La lista y el banner son el canal para
 esa información.
 
-**Solo lectura, sin excepciones.** Ningún endpoint modifica el sistema de
-archivos. La app solo lee, mide y muestra.
+**Solo lectura, con un único efecto lateral deliberado.** Hasta ahora "solo
+lectura" mezclaba dos ideas; a partir de S4 se separan. Primera: la app nunca
+modifica el sistema de archivos. Eso sigue siendo absoluto, sin excepciones —
+"Mostrar en Finder" lo respeta, porque `open -R` solo abre una ventana de Finder,
+no cambia nada. Segunda: ningún endpoint tiene efectos laterales. Esa se rompe
+exactamente una vez, a propósito, con `POST /api/reveal`, que abre Finder en una
+ruta dada. Se considera seguro porque `open -R` no ejecuta nada (`open` a secas
+lanzaría la app asociada al fichero; el flag `-R` solo lo revela), la ruta tiene
+que ser un nodo que el último escaneo produjo de verdad (una ruta arbitraria del
+sistema se rechaza con 404), y el endpoint es solo `POST` con comprobación de
+`Origin`, así que una etiqueta `<img>` perdida o una página de otro origen en
+otra pestaña no pueden dispararlo. El resto de endpoints siguen siendo de solo
+lectura.
 
 ## Rendimiento
 

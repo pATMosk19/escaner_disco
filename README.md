@@ -91,8 +91,17 @@ inside". It is not drawn in the sunburst because its size is 0; giving it an
 artificial minimum size would falsify the chart. The list and the banner are the
 channel for that information.
 
-**Read-only, no exceptions.** No endpoint modifies the file system. The app only
-reads, measures and displays.
+**Read-only, with one deliberate side effect.** Two ideas used to hide under
+"read-only"; from S4 they are separated. First: the app never modifies the file
+system. That stays absolute, no exceptions — "Reveal in Finder" honours it,
+because `open -R` only opens a Finder window, it changes nothing. Second: no
+endpoint has side effects. That one is broken exactly once, on purpose, by
+`POST /api/reveal`, which opens Finder at a given path. It is considered safe
+because `open -R` executes nothing (plain `open` would launch the file's app;
+the `-R` flag only reveals it), the path must be a node the last scan actually
+produced (an arbitrary filesystem path is rejected with 404), and the endpoint
+is `POST`-only with an `Origin` check, so a stray `<img>` tag or a cross-site
+page in another tab cannot trigger it. Every other endpoint is still read-only.
 
 ## Performance
 
