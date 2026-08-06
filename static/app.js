@@ -160,13 +160,102 @@ function renderList() {
       `<td class="name"><span class="swatch" style="background:${color(hue, 1)}"></span>${escapeHtml(child.name)}</td>` +
       `<td class="size">${sizeCell}</td>` +
       `<td class="pct">${pct.toFixed(1)}%</td>` +
-      `<td class="bar-cell"><div class="bar" style="width:${Math.max(2, pct)}%;background:${color(hue, 1)}"></div></td>`;
+      `<td class="bar-cell"><div class="bar" style="width:${Math.max(2, pct)}%;background:${color(hue, 1)}"></div></td>` +
+      `<td class="actions"></td>`;
+
+    // Row actions: only for real paths. Synthetic "Otros (N)" has none.
+    // The cell always exists (empty for synthetic) so widths never shift; the
+    // buttons only change opacity on hover/focus, they are always in the DOM.
+    if (!child.synthetic) {
+      tr.querySelector(".actions").append(
+        actionButton("🔎", "Mostrar en Finder", child, () => reveal(child.path, tr)),
+        actionButton("📋", "Copiar ruta", child, () => copyPath(child.path, tr)),
+      );
+    }
 
     tr.addEventListener("mouseenter", () => highlightRow(child.path, true));
     tr.addEventListener("mouseleave", () => highlightRow(child.path, false));
     tr.addEventListener("click", () => zoomTo(child));
     tbody.appendChild(tr);
   });
+}
+
+// --- Row actions (reveal in Finder / copy path) ---
+function actionButton(glyph, label, child, handler) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = "row-action";
+  b.textContent = glyph;
+  b.title = label;
+  b.setAttribute("aria-label", `${label}: ${child.name}`);
+  b.addEventListener("click", (e) => {
+    e.stopPropagation();  // don't let the row's zoom handler fire
+    handler();
+  });
+  return b;
+}
+
+async function reveal(path, tr) {
+  try {
+    const r = await fetch("/api/reveal", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path }),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (r.ok && j.ok) flashRow(tr, "Mostrado en Finder");
+    else flashRow(tr, j.error || `Error ${r.status}`, true);
+  } catch (e) {
+    flashRow(tr, "Error de red", true);
+  }
+}
+
+async function copyPath(path, tr) {
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(path);
+      flashRow(tr, "Ruta copiada");
+      return;
+    }
+  } catch (e) {
+    // Async Clipboard API can be blocked outside a user gesture; fall back.
+  }
+  if (legacyCopy(path)) flashRow(tr, "Ruta copiada");
+  else flashRow(tr, "No se pudo copiar", true);
+}
+
+// execCommand fallback for contexts where the async clipboard API is blocked.
+function legacyCopy(text) {
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.style.position = "fixed";
+  ta.style.opacity = "0";
+  document.body.appendChild(ta);
+  ta.focus();
+  ta.select();
+  let ok = false;
+  try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+  ta.remove();
+  return ok;
+}
+
+// Brief, ephemeral confirmation next to the row (~1.5 s). No alert().
+let _flashTimer;
+function flashRow(tr, text, isError = false) {
+  let el = document.getElementById("row-flash");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "row-flash";
+    document.body.appendChild(el);
+  }
+  el.textContent = text;
+  el.classList.toggle("error", !!isError);
+  const rect = tr.getBoundingClientRect();
+  el.style.top = (rect.top + rect.height / 2) + "px";
+  el.style.left = (rect.right - 12) + "px";
+  el.classList.add("show");
+  clearTimeout(_flashTimer);
+  _flashTimer = setTimeout(() => el.classList.remove("show"), 1500);
 }
 
 function renderBreadcrumb() {

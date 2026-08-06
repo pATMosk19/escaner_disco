@@ -105,6 +105,24 @@ button:hover { filter: brightness(1.1); }
 #list td.size { text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
 #list td.pct { text-align: right; color: var(--muted); width: 48px; font-variant-numeric: tabular-nums; }
 #list td.bar-cell { width: 120px; }
+/* Actions column always reserves its width so the bar/pct never shift; the
+   buttons only fade in on row hover or keyboard focus. */
+#list td.actions { width: 56px; text-align: right; white-space: nowrap; padding-right: 6px; }
+.row-action {
+  padding: 2px 4px;
+  margin-left: 2px;
+  background: none;
+  border: none;
+  border-radius: 4px;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity .1s;
+}
+#list tr:hover .row-action { opacity: .85; }
+.row-action:hover { opacity: 1; background: #ffffff1a; }
+.row-action:focus-visible { opacity: 1; outline: 2px solid var(--accent); }
 .bar { height: 8px; border-radius: 4px; }
 .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: middle; }
 
@@ -128,5 +146,23 @@ button:hover { filter: brightness(1.1); }
   z-index: 10;
 }
 #tooltip .tt-path { color: var(--muted); word-break: break-all; }
+
+/* Ephemeral per-row action feedback */
+#row-flash {
+  position: fixed;
+  translate: -100% -50%;
+  pointer-events: none;
+  background: #000d;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 12px;
+  white-space: nowrap;
+  z-index: 20;
+  opacity: 0;
+  transition: opacity .12s;
+}
+#row-flash.show { opacity: 1; }
+#row-flash.error { border-color: #ff6b6b; color: #ff9b9b; }
 
 #rescan-btn { position: fixed; top: 12px; right: 16px; }
