@@ -55,6 +55,33 @@ as permission errors and the reported total is short. The app makes this visible
 with a warning banner under the breadcrumb; expand it to see the unreadable
 paths.
 
+## Caching
+
+After each successful scan the tree is cached to disk so you don't wait ~35 s on
+every startup. The cache lives in the app's **own** directory —
+`~/Library/Application Support/escaner_disco/` — never inside the project,
+because a cache file is a full map of the names of your folders. Files are
+created `0600`, the directory `0700`.
+
+Format is json + gzip, both stdlib. **Never pickle:** unpickling executes code,
+and this tool can't take that risk even in a file it wrote itself. There is one
+file per scanned path, named by a hash of the path (the path itself is stored
+inside), so several caches can coexist. A 1.2M-node scan compresses to ~3 MB.
+
+The cache is **never invalidated automatically.** When the active tree comes
+from cache the app shows when it was taken (`Datos del 6 ago, 20:47 ·
+Rescanear`) instead of pretending it's fresh — you decide whether to keep it or
+rescan. Raising `MAX_CHILDREN` invalidates existing caches: a file built with a
+different cap is ignored on load (with a warning), because pruning happens at
+scan time.
+
+Three endpoints back this: `GET /api/cache` lists saved scans, `POST
+/api/cache/load` loads one into memory, `POST /api/cache/clear` deletes every
+cache file. The two POSTs are `Origin`-checked and POST-only like
+`/api/reveal`; `clear` takes **no path** (the client says "clear", not "clear
+this") and only ever removes `*.json.gz` inside the cache directory, file by
+file — never `shutil.rmtree`.
+
 ## Design decisions
 
 **Real on-disk size (`st_blocks * 512`), not `st_size`.** We want the space a
@@ -91,17 +118,16 @@ inside". It is not drawn in the sunburst because its size is 0; giving it an
 artificial minimum size would falsify the chart. The list and the banner are the
 channel for that information.
 
-**Read-only, with one deliberate side effect.** Two ideas used to hide under
-"read-only"; from S4 they are separated. First: the app never modifies the file
-system. That stays absolute, no exceptions — "Reveal in Finder" honours it,
-because `open -R` only opens a Finder window, it changes nothing. Second: no
-endpoint has side effects. That one is broken exactly once, on purpose, by
-`POST /api/reveal`, which opens Finder at a given path. It is considered safe
-because `open -R` executes nothing (plain `open` would launch the file's app;
-the `-R` flag only reveals it), the path must be a node the last scan actually
-produced (an arbitrary filesystem path is rejected with 404), and the endpoint
-is `POST`-only with an `Origin` check, so a stray `<img>` tag or a cross-site
-page in another tab cannot trigger it. Every other endpoint is still read-only.
+**Never touches your files; manages only its own.** Two promises used to hide
+under "read-only". First: the app never modifies *your* files — absolute, no
+exceptions. What it does manage, since S5, is **its own cache files**, in its
+own directory, that it created; "does not delete anything" and "does not delete
+anything of yours" are different promises, and the second is the one we can
+keep. `/api/cache/clear` only ever deletes the app's `*.json.gz`, and never
+accepts a path from the client. Second: no endpoint has side effects — broken on
+purpose by `POST /api/reveal` (opens Finder; `open -R` executes nothing, the
+path must be a node the scan produced, `POST`-only with an `Origin` check) and
+by the cache endpoints. Every other endpoint is still read-only.
 
 ## Performance
 
@@ -124,9 +150,10 @@ the entry name in each node — not from measuring less disk.
 escaner_disco/
 ├── scanner.py          # iterative, read-only disk scanner (stdlib)
 ├── server.py           # local HTTP server, 127.0.0.1 only
+├── cache.py            # on-disk gzip+json cache of scanned trees
 ├── static/
 │   ├── index.html
-│   ├── app.js          # sunburst, list, breadcrumb, error banner
+│   ├── app.js          # sunburst, list, breadcrumb, error banner, cache UI
 │   └── style.css
 ├── docs/               # original per-session specs (in Spanish)
 ├── LICENSE
@@ -136,9 +163,9 @@ escaner_disco/
 
 ## Docs
 
-`docs/` contains the original per-session specifications (`PROMPT-S1.md`,
-`PROMPT-S2.md`, `PROMPT-S3.md`), written in Spanish. They record how the project
-was built session by session.
+`docs/` contains the original per-session specifications (`PROMPT-S1.md`
+through `PROMPT-S5.md`), written in Spanish. They record how the project was
+built session by session.
 
 ## License
 

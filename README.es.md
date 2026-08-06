@@ -55,6 +55,33 @@ Sin el permiso el escaneo no falla, pero muchas carpetas del sistema vuelven
 como errores de permisos y el total sale corto. La app lo hace visible con un
 banner de aviso bajo el breadcrumb; despliégalo para ver las rutas no legibles.
 
+## Caché
+
+Tras cada escaneo con éxito, el árbol se cachea a disco para no esperar ~35 s en
+cada arranque. La caché vive en el directorio **propio** de la app —
+`~/Library/Application Support/escaner_disco/` — nunca dentro del proyecto,
+porque un fichero de caché es un mapa completo de los nombres de tus carpetas.
+Los ficheros se crean con `0600` y el directorio con `0700`.
+
+El formato es json + gzip, ambos de stdlib. **Nunca pickle:** deserializar
+pickle ejecuta código, y esta herramienta no puede asumir ese riesgo ni siquiera
+en un fichero propio. Hay un fichero por ruta escaneada, nombrado por un hash de
+la ruta (la ruta original va dentro), así que varias cachés conviven. Un escaneo
+de 1,2 M de nodos comprime a ~3 MB.
+
+La caché **no se invalida sola.** Cuando el árbol activo viene de caché, la app
+muestra cuándo se tomó (`Datos del 6 ago, 20:47 · Rescanear`) en vez de fingir
+que es fresco — tú decides si conservarlo o reescanear. Subir `MAX_CHILDREN`
+invalida las cachés existentes: un fichero generado con otro tope se ignora al
+cargar (con un aviso), porque la poda ocurre al escanear.
+
+Lo respaldan tres endpoints: `GET /api/cache` lista los escaneos guardados,
+`POST /api/cache/load` carga uno en memoria, `POST /api/cache/clear` borra todos
+los ficheros de caché. Los dos POST llevan comprobación de `Origin` y son solo
+`POST`, igual que `/api/reveal`; `clear` **no recibe ninguna ruta** (el cliente
+dice "borra", no "borra esto") y solo borra `*.json.gz` dentro del directorio de
+caché, fichero a fichero — nunca `shutil.rmtree`.
+
 ## Decisiones de diseño
 
 **Tamaño real en disco (`st_blocks * 512`), no `st_size`.** Queremos el espacio
@@ -92,19 +119,16 @@ mirar dentro". No se dibuja en el sunburst porque su tamaño es 0; darle un
 mínimo artificial falsearía el gráfico. La lista y el banner son el canal para
 esa información.
 
-**Solo lectura, con un único efecto lateral deliberado.** Hasta ahora "solo
-lectura" mezclaba dos ideas; a partir de S4 se separan. Primera: la app nunca
-modifica el sistema de archivos. Eso sigue siendo absoluto, sin excepciones —
-"Mostrar en Finder" lo respeta, porque `open -R` solo abre una ventana de Finder,
-no cambia nada. Segunda: ningún endpoint tiene efectos laterales. Esa se rompe
-exactamente una vez, a propósito, con `POST /api/reveal`, que abre Finder en una
-ruta dada. Se considera seguro porque `open -R` no ejecuta nada (`open` a secas
-lanzaría la app asociada al fichero; el flag `-R` solo lo revela), la ruta tiene
-que ser un nodo que el último escaneo produjo de verdad (una ruta arbitraria del
-sistema se rechaza con 404), y el endpoint es solo `POST` con comprobación de
-`Origin`, así que una etiqueta `<img>` perdida o una página de otro origen en
-otra pestaña no pueden dispararlo. El resto de endpoints siguen siendo de solo
-lectura.
+**Nunca toca tus ficheros; solo gestiona los suyos.** Hasta ahora "solo lectura"
+mezclaba dos promesas. Primera: la app nunca modifica *tus* ficheros — absoluto,
+sin excepciones. Lo que sí gestiona, desde S5, son **sus propios ficheros de
+caché**, en su propio directorio, que ella creó; "no borra nada" y "no borra
+nada tuyo" son promesas distintas, y la segunda es la que podemos cumplir.
+`/api/cache/clear` solo borra los `*.json.gz` de la app, y nunca acepta una ruta
+del cliente. Segunda: ningún endpoint tiene efectos laterales — rota a propósito
+por `POST /api/reveal` (abre Finder; `open -R` no ejecuta nada, la ruta tiene que
+ser un nodo que el escaneo produjo, solo `POST` con comprobación de `Origin`) y
+por los endpoints de caché. El resto de endpoints siguen siendo de solo lectura.
 
 ## Rendimiento
 
@@ -127,9 +151,10 @@ la entrada en cada nodo, no de medir menos disco.
 escaner_disco/
 ├── scanner.py          # escáner de disco iterativo y de solo lectura (stdlib)
 ├── server.py           # servidor HTTP local, solo 127.0.0.1
+├── cache.py            # caché en disco (gzip+json) de los árboles escaneados
 ├── static/
 │   ├── index.html
-│   ├── app.js          # sunburst, lista, breadcrumb, banner de errores
+│   ├── app.js          # sunburst, lista, breadcrumb, banner, UI de caché
 │   └── style.css
 ├── docs/               # especificaciones originales por sesión (en español)
 ├── LICENSE
@@ -139,9 +164,9 @@ escaner_disco/
 
 ## Docs
 
-`docs/` contiene las especificaciones originales por sesión (`PROMPT-S1.md`,
-`PROMPT-S2.md`, `PROMPT-S3.md`), escritas en español. Registran cómo se
-construyó el proyecto sesión a sesión.
+`docs/` contiene las especificaciones originales por sesión (de `PROMPT-S1.md`
+a `PROMPT-S5.md`), escritas en español. Registran cómo se construyó el proyecto
+sesión a sesión.
 
 ## Licencia
 
