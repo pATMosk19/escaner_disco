@@ -26,7 +26,7 @@ python3 server.py            # sirve en http://127.0.0.1:8765
 
 Abre <http://127.0.0.1:8765>, escribe una ruta (por defecto
 `/System/Volumes/Data`) o usa los accesos rápidos (`~`, `~/Downloads`,
-`~/Library`) y pulsa **Escanear**. Párralo con `Ctrl-C` en la terminal donde
+`~/Library`) y pulsa **Escanear**. Páralo con `Ctrl-C` en la terminal donde
 corre. El puerto es configurable: `python3 server.py --port 9000`.
 
 También hay un modo CLI que imprime el top 20 y un resumen, o vuelca el árbol
