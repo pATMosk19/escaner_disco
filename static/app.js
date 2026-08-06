@@ -160,17 +160,18 @@ function renderList() {
       `<td class="name"><span class="swatch" style="background:${color(hue, 1)}"></span>${escapeHtml(child.name)}</td>` +
       `<td class="size">${sizeCell}</td>` +
       `<td class="pct">${pct.toFixed(1)}%</td>` +
-      `<td class="bar-cell"><div class="bar" style="width:${Math.max(2, pct)}%;background:${color(hue, 1)}"></div></td>` +
-      `<td class="actions"></td>`;
+      `<td class="bar-cell"><div class="bar" style="width:${Math.max(2, pct)}%;background:${color(hue, 1)}"></div></td>`;
 
-    // Row actions: only for real paths. Synthetic "Otros (N)" has none.
-    // The cell always exists (empty for synthetic) so widths never shift; the
-    // buttons only change opacity on hover/focus, they are always in the DOM.
+    // Row actions live over the right end of the bar cell (no extra column, so
+    // the bar/pct never move). Synthetic "Otros (N)" rows have no real path.
     if (!child.synthetic) {
-      tr.querySelector(".actions").append(
-        actionButton("🔎", "Mostrar en Finder", child, () => reveal(child.path, tr)),
-        actionButton("📋", "Copiar ruta", child, () => copyPath(child.path, tr)),
+      const actions = document.createElement("div");
+      actions.className = "row-actions";
+      actions.append(
+        actionButton(ICON_REVEAL, "Mostrar en Finder", child, () => reveal(child.path, tr)),
+        actionButton(ICON_COPY, "Copiar ruta", child, () => copyPath(child.path, tr)),
       );
+      tr.querySelector(".bar-cell").appendChild(actions);
     }
 
     tr.addEventListener("mouseenter", () => highlightRow(child.path, true));
@@ -181,11 +182,18 @@ function renderList() {
 }
 
 // --- Row actions (reveal in Finder / copy path) ---
-function actionButton(glyph, label, child, handler) {
+// Monochrome inline SVG, 24x24 viewBox, inherits currentColor. No color emoji:
+// a colored glyph breaks the density of a dark table.
+const ICON_REVEAL =
+  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg>';
+const ICON_COPY =
+  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>';
+
+function actionButton(svg, label, child, handler) {
   const b = document.createElement("button");
   b.type = "button";
   b.className = "row-action";
-  b.textContent = glyph;
+  b.innerHTML = svg;
   b.title = label;
   b.setAttribute("aria-label", `${label}: ${child.name}`);
   b.addEventListener("click", (e) => {

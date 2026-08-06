@@ -104,26 +104,46 @@ button:hover { filter: brightness(1.1); }
 #list td.name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; width: 100%; max-width: 0; }
 #list td.size { text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
 #list td.pct { text-align: right; color: var(--muted); width: 48px; font-variant-numeric: tabular-nums; }
-#list td.bar-cell { width: 120px; }
-/* Actions column always reserves its width so the bar/pct never shift; the
-   buttons only fade in on row hover or keyboard focus. */
-#list td.actions { width: 56px; text-align: right; white-space: nowrap; padding-right: 6px; }
-.row-action {
-  padding: 2px 4px;
-  margin-left: 2px;
-  background: none;
-  border: none;
-  border-radius: 4px;
-  font-size: 13px;
-  line-height: 1;
-  cursor: pointer;
+/* min-width pins the cell so table-layout:auto can't collapse it under the
+   name column; the bar stays visible and the actions have a home at its right. */
+#list td.bar-cell { width: 120px; min-width: 120px; position: relative; }
+.bar { height: 8px; border-radius: 4px; }
+
+/* Row actions sit in a fixed-size container over the normally-empty right end
+   of the bar cell, so the bar and percentage keep their exact pre-S4 position.
+   Hidden by opacity only (never display:none, so they stay in the DOM and are
+   keyboard-reachable); shown on row hover or keyboard focus. */
+.row-actions {
+  position: absolute;
+  top: 50%;
+  right: 4px;
+  transform: translateY(-50%);
+  display: flex;
+  gap: 4px;
   opacity: 0;
+  pointer-events: none;
   transition: opacity .1s;
 }
-#list tr:hover .row-action { opacity: .85; }
-.row-action:hover { opacity: 1; background: #ffffff1a; }
-.row-action:focus-visible { opacity: 1; outline: 2px solid var(--accent); }
-.bar { height: 8px; border-radius: 4px; }
+#list tr:hover .row-actions,
+#list td.bar-cell:focus-within .row-actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+.row-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+}
+.row-action:hover { color: var(--text); }
+.row-action:focus-visible { color: var(--text); outline: 1px solid var(--border); border-radius: 3px; }
+.row-action svg { width: 14px; height: 14px; display: block; }
 .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: middle; }
 
 /* Sunburst sectors */
