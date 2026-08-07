@@ -31,12 +31,22 @@ lives in a single module, `platform_support.py`.
 | Real on-disk size | `st_blocks * 512` | `GetCompressedFileSizeW` (one call per file, see below) | `st_blocks * 512` |
 | Reveal in file manager | reveals the file (Finder) | selects the file (Explorer) | opens the **parent directory** (`xdg-open`) |
 | Cache directory | `~/Library/Application Support/escaner_disco` | `%LOCALAPPDATA%\escaner_disco` | `$XDG_DATA_HOME` or `~/.local/share/escaner_disco` |
+| Volume boundary check | `st_dev` | drive letter (`os.scandir` leaves `st_dev` 0) | `st_dev` |
 
 Known limitations:
 
 - **Windows exact size.** Real occupancy uses `GetCompressedFileSizeW`, one
   syscall per file. Set `WINDOWS_EXACT_SIZE = False` in `platform_support.py` to
   fall back to the logical `st_size` and skip the call.
+- **Windows volume boundaries use the drive letter.** `os.scandir` fills a
+  child's `stat` from the directory listing and leaves `st_dev` at 0, so the
+  scanner compares the drive letter to decide whether a subdirectory is on the
+  same volume (comparing the raw `st_dev` would drop *every* subdirectory as
+  "another volume" — the bug fixed in S8). One consequence: a volume mounted
+  into a folder (an NTFS junction / mount point to another drive) shares the
+  parent's drive letter and, if its `st_dev` also comes back 0, is scanned as if
+  it were part of this volume. Rare on home machines; the alternative (a real
+  `os.stat` per directory) is not worth its cost.
 - **Linux reveal.** There is no `-R`-style "reveal" on Linux; `xdg-open` on a
   file would *launch* it in its associated app (which the reveal endpoint
   forbids), so on Linux it opens the containing directory instead.
@@ -164,6 +174,18 @@ Scanning `/` would count the same paths twice (once via `/`, once via the
 firmlink), so when the root is `/` we exclude `/System/Volumes/Data`. A
 consequence is that the reported total is not directly comparable with the
 figure System Settings shows.
+
+**Don't cross volume boundaries — by the right signal per OS.** An external
+disk mounted under the scanned tree should not be counted into its total, so
+the scanner refuses to descend into a subdirectory on a different volume. On
+macOS and Linux `st_dev` is the reliable signal. On Windows it is *not*:
+`os.scandir` returns children with `st_dev == 0`, so the check keys on the drive
+letter instead (`platform_support.same_volume`). Comparing the raw `st_dev`
+there made every subdirectory look like another volume, and the scan silently
+stopped at the first level — a whole `C:\Windows` scan returning 22 files and no
+error (fixed in S8). Because a silent no-descent is indistinguishable from a
+correct scan of a tiny flat folder, the scanner now also warns on stderr when a
+root has subdirectories but none were walked.
 
 **Base 1000 (GB), not 1024 (GiB).** Sizes are formatted in base 1000 because
 that is what Finder shows in "Get Info". Using GiB would make the numbers

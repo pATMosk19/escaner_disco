@@ -32,12 +32,23 @@ un sistema operativo vive en un único módulo, `platform_support.py`.
 | Tamaño real en disco | `st_blocks * 512` | `GetCompressedFileSizeW` (una llamada por fichero, ver abajo) | `st_blocks * 512` |
 | Mostrar en el gestor | revela el fichero (Finder) | selecciona el fichero (Explorador) | abre el **directorio padre** (`xdg-open`) |
 | Directorio de caché | `~/Library/Application Support/escaner_disco` | `%LOCALAPPDATA%\escaner_disco` | `$XDG_DATA_HOME` o `~/.local/share/escaner_disco` |
+| Límite de volumen | `st_dev` | letra de unidad (`os.scandir` deja `st_dev` a 0) | `st_dev` |
 
 Limitaciones conocidas:
 
 - **Tamaño exacto en Windows.** La ocupación real usa `GetCompressedFileSizeW`,
   una llamada al sistema por fichero. Poniendo `WINDOWS_EXACT_SIZE = False` en
   `platform_support.py` se usa el `st_size` lógico y se ahorra la llamada.
+- **El límite de volumen en Windows usa la letra de unidad.** `os.scandir`
+  rellena el `stat` de cada hijo a partir del listado del directorio y deja
+  `st_dev` a 0, así que el scanner compara la letra de unidad para decidir si un
+  subdirectorio está en el mismo volumen (comparar el `st_dev` crudo descartaría
+  *todos* los subdirectorios como "otro volumen" — el bug corregido en S8). Una
+  consecuencia: un volumen montado en una carpeta (junction o punto de montaje
+  NTFS a otra unidad) comparte la letra de unidad del padre y, si su `st_dev`
+  también viene a 0, se escanea como si fuera parte de este volumen. Raro en
+  equipos domésticos; la alternativa (un `os.stat` real por directorio) no
+  compensa su coste.
 - **Reveal en Linux.** No existe un "reveal" tipo `-R`; `xdg-open` sobre un
   fichero lo *abriría* con su aplicación asociada (lo que el endpoint de reveal
   prohíbe), así que en Linux se abre el directorio que lo contiene.
@@ -168,6 +179,19 @@ lectura y los datos del usuario viven en `/System/Volumes/Data`, montado sobre
 por `/`, otra por el firmlink), así que cuando la raíz es `/` excluimos
 `/System/Volumes/Data`. Como consecuencia, el total no es directamente
 comparable con la cifra que muestra Ajustes del Sistema.
+
+**No cruzar límites de volumen — con la señal correcta según el SO.** Un disco
+externo montado bajo el árbol escaneado no debe contarse en su total, así que el
+scanner se niega a descender a un subdirectorio de otro volumen. En macOS y
+Linux `st_dev` es la señal fiable. En Windows *no* lo es: `os.scandir` devuelve
+los hijos con `st_dev == 0`, así que la comprobación se apoya en la letra de
+unidad (`platform_support.same_volume`). Comparar el `st_dev` crudo hacía que
+cada subdirectorio pareciera otro volumen, y el escaneo se detenía en silencio
+en el primer nivel — un escaneo entero de `C:\Windows` devolviendo 22 ficheros y
+ningún error (corregido en S8). Como un no-descenso silencioso es indistinguible
+de un escaneo correcto de una carpeta plana pequeña, el scanner ahora también
+avisa por stderr cuando una raíz tiene subdirectorios pero no se recorrió
+ninguno.
 
 **Base 1000 (GB), no 1024 (GiB).** Los tamaños se formatean en base 1000 porque
 es lo que muestra Finder en "Obtener información". Usar GiB haría que los
