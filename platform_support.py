@@ -153,6 +153,45 @@ def excluded_here(path, root):
     return False
 
 
+# --- Cross-volume check ----------------------------------------------------
+
+def same_volume(root_path, root_st, child_path, child_st):
+    """True if `child_path` is on the same volume as the scan root.
+
+    The scanner refuses to cross volume boundaries (an external disk mounted
+    under the tree would otherwise be counted into the wrong total). The
+    reliable signal for "same volume" differs per OS.
+
+    POSIX (macOS, Linux): st_dev is always populated, so compare it directly —
+    unchanged behaviour.
+
+    Windows: os.scandir() fills a DirEntry's stat from the directory listing,
+    without the extra syscall that a full os.stat() makes to fetch the file
+    index. So `child_st.st_dev` is routinely 0 while `root_st` (a real os.stat)
+    is not, and comparing the two would drop every subdirectory as "another
+    volume" — the silent no-descent bug S8 fixes. Compare the drive letter
+    (case-insensitive) instead, and only fall back to st_dev when both values
+    are actually populated.
+
+    Known limitation: a volume mounted into a folder (an NTFS junction / mount
+    point to another drive) shares the parent's drive letter. If its st_dev
+    comes back 0 it is scanned as part of this volume. Rare on home machines,
+    and the alternative — a real os.stat() per directory — is not worth its
+    cost; documented rather than hidden.
+    """
+    if platform_id() != "windows":
+        return root_st.st_dev == child_st.st_dev
+
+    root_drive = os.path.splitdrive(root_path)[0].lower()
+    child_drive = os.path.splitdrive(child_path)[0].lower()
+    if root_drive != child_drive:
+        return False
+    # Use st_dev only when it is real on both sides; scandir leaves it 0.
+    if child_st.st_dev != 0 and root_st.st_dev != 0:
+        return root_st.st_dev == child_st.st_dev
+    return True
+
+
 # --- On-disk size ----------------------------------------------------------
 
 _INVALID_FILE_SIZE = 0xFFFFFFFF
