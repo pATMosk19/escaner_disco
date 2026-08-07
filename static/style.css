@@ -191,6 +191,26 @@ button:hover { filter: brightness(1.1); }
 #sunburst text { pointer-events: none; user-select: none; }
 #center-label { fill: var(--text); }
 
+/* Treemap rects — same hover treatment as the sunburst, 1px borders in the
+   background colour so tiles separate without a new palette. */
+#treemap { width: 100%; height: 100%; }
+#treemap rect { cursor: pointer; stroke: var(--bg); stroke-width: 1; transition: opacity .1s; }
+#treemap rect:hover, #treemap rect.highlight { opacity: 1; }
+#treemap.dimmed rect:not(.highlight) { opacity: 0.35; }
+#treemap text { pointer-events: none; user-select: none; }
+
+/* View switch (Sunburst | Treemap): discreet, same dark palette as the rest. */
+#view-tabs { display: flex; gap: 4px; padding: 0 4px 6px; }
+.view-tab {
+  background: var(--panel);
+  color: var(--muted);
+  border: 1px solid var(--border);
+  padding: 4px 12px;
+  font-size: 13px;
+}
+.view-tab:hover { filter: none; color: var(--text); }
+.view-tab[aria-pressed="true"] { color: var(--text); border-color: var(--accent); }
+
 /* Tooltip */
 #tooltip {
   position: fixed;
