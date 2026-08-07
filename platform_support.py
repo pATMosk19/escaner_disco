@@ -206,7 +206,12 @@ def disk_size(st, path):
     real footprint like they do on macOS/Linux — consistent with the S1
     decision to measure occupancy, not logical length.
     """
-    if platform_id() != "windows" or not WINDOWS_EXACT_SIZE:
+    if platform_id() == "windows":
+        # Windows has no st_blocks, so without the exact-size call fall back to
+        # the logical st_size (not st_blocks * 512, which would AttributeError).
+        if not WINDOWS_EXACT_SIZE:
+            return st.st_size
+    else:
         return st.st_blocks * 512
 
     import ctypes
