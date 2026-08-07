@@ -14,7 +14,25 @@ const state = {
   current: null,  // current node (centre), pruned subtree from /api/node
   source: "",     // "scan" | "cache" — where the active tree came from
   scannedAt: 0,   // epoch seconds the active tree was scanned
+  platform: "",   // "macos" | "windows" | "linux"
+  sep: "/",       // path separator for this platform
 };
+
+// Path separator per platform. Windows paths from the server use backslashes.
+function sepFor(platform) { return platform === "windows" ? "\\" : "/"; }
+
+// Parent of an absolute path, using the active separator. Never climbs above
+// the scan root (the caller re-clamps to root anyway).
+function parentPath(path) {
+  const i = path.lastIndexOf(state.sep);
+  return i <= 0 ? path : path.slice(0, i);
+}
+
+// Join like the server's os.path.join: no double separator at a drive/root
+// that already ends in one (e.g. "C:\\" + "Users" -> "C:\\Users").
+function joinPath(base, name) {
+  return base.endsWith(state.sep) ? base + name : base + state.sep + name;
+}
 
 // --- Size formatting: base 1000, like Finder ---
 function human(size) {
@@ -78,6 +96,13 @@ function layout(node, depth, a0, a1, hue, rootChildPath, sectors) {
 // --- Rendering ---
 const svg = document.getElementById("sunburst");
 const tooltip = document.getElementById("tooltip");
+
+// Name of the OS file manager, for button labels and confirmations.
+function fileManager() {
+  if (state.platform === "windows") return "el Explorador";
+  if (state.platform === "linux") return "el gestor de archivos";
+  return "Finder";
+}
 
 function isNavigable(node) {
   // Unreadable dirs have no children to show, so zooming in is pointless.
@@ -170,7 +195,7 @@ function renderList() {
       const actions = document.createElement("div");
       actions.className = "row-actions";
       actions.append(
-        actionButton(ICON_REVEAL, "Mostrar en Finder", child, () => reveal(child.path, tr)),
+        actionButton(ICON_REVEAL, `Mostrar en ${fileManager()}`, child, () => reveal(child.path, tr)),
         actionButton(ICON_COPY, "Copiar ruta", child, () => copyPath(child.path, tr)),
       );
       tr.querySelector(".bar-cell").appendChild(actions);
@@ -213,7 +238,7 @@ async function reveal(path, tr) {
       body: JSON.stringify({ path }),
     });
     const j = await r.json().catch(() => ({}));
-    if (r.ok && j.ok) flashRow(tr, "Mostrado en Finder");
+    if (r.ok && j.ok) flashRow(tr, `Mostrado en ${fileManager()}`);
     else flashRow(tr, j.error || `Error ${r.status}`, true);
   } catch (e) {
     flashRow(tr, "Error de red", true);
@@ -274,14 +299,15 @@ function renderBreadcrumb() {
   const root = state.rootPath;
   const cur = state.current.path;
 
-  // Segments from root down to current.
-  let rel = cur.startsWith(root) ? cur.slice(root.length) : "";
-  const parts = rel.split("/").filter(Boolean);
+  // Segments from root down to current, split on the platform separator.
+  const rel = cur.startsWith(root) ? cur.slice(root.length) : "";
+  const parts = rel.split(state.sep).filter(Boolean);
 
-  const crumbs = [{ name: root === "/" ? "/" : (root.split("/").pop() || root), path: root }];
+  const rootName = root.split(state.sep).filter(Boolean).pop() || root;
+  const crumbs = [{ name: rootName, path: root }];
   let acc = root;
   for (const part of parts) {
-    acc = acc === "/" ? "/" + part : acc + "/" + part;
+    acc = joinPath(acc, part);
     crumbs.push({ name: part, path: acc });
   }
 
@@ -354,7 +380,7 @@ async function navigateTo(path) {
 
 function goUp() {
   if (state.current.path === state.rootPath) return;
-  const parent = state.current.path.replace(/\/[^/]+$/, "") || "/";
+  const parent = parentPath(state.current.path);
   navigateTo(parent.startsWith(state.rootPath) ? parent : state.rootPath);
 }
 
@@ -416,6 +442,7 @@ async function enterResults(s) {
   state.rootPath = s.root;
   state.source = s.source;
   state.scannedAt = s.scanned_at;
+  if (s.platform) { state.platform = s.platform; state.sep = sepFor(s.platform); }
   const node = await fetchNode(s.root);
   if (!node) {
     document.getElementById("progress").textContent = "El árbol no está disponible.";
@@ -552,6 +579,21 @@ async function clearCache() {
 }
 
 // --- Unreadable-paths banner ---
+// Per-OS hint on how to reduce unreadable-path errors.
+function permissionHint() {
+  if (state.platform === "windows") {
+    return "Ejecutar como <b>Administrador</b> reduce los errores, a costa de " +
+           "correr un servidor HTTP con privilegios elevados.";
+  }
+  if (state.platform === "linux") {
+    return "Ejecutar con permisos suficientes (p. ej. <code>sudo</code>) reduce " +
+           "los errores, a costa de correr un servidor HTTP como root.";
+  }
+  return "Conceder <b>Acceso total al disco</b> reduce los errores; ejecutar " +
+         "con <code>sudo</code> los reduce más, a costa de correr un servidor " +
+         "HTTP como root.";
+}
+
 function renderBanner(count) {
   const b = document.getElementById("error-banner");
   b.classList.remove("open");
@@ -559,7 +601,7 @@ function renderBanner(count) {
   b.classList.remove("hidden");
   b.innerHTML =
     `<div class="banner-head">⚠️ ${count.toLocaleString()} rutas no legibles — el total puede estar subestimado</div>` +
-    `<div class="banner-note">Conceder <b>Acceso total al disco</b> reduce los errores; ejecutar con <code>sudo</code> los reduce más, a costa de correr un servidor HTTP como root.</div>` +
+    `<div class="banner-note">${permissionHint()}</div>` +
     `<div class="banner-paths hidden"></div>`;
   b.querySelector(".banner-head").addEventListener("click", toggleErrorPaths);
 }
@@ -623,12 +665,6 @@ document.getElementById("scan-btn").addEventListener("click", () => {
 document.getElementById("path-input").addEventListener("keydown", (e) => {
   if (e.key === "Enter") document.getElementById("scan-btn").click();
 });
-for (const b of document.querySelectorAll(".shortcuts button")) {
-  b.addEventListener("click", () => {
-    document.getElementById("path-input").value = b.dataset.path;
-    startScan(b.dataset.path);
-  });
-}
 document.getElementById("rescan-btn").addEventListener("click", () => {
   document.getElementById("results").classList.add("hidden");
   document.getElementById("start").classList.remove("hidden");
@@ -636,5 +672,36 @@ document.getElementById("rescan-btn").addEventListener("click", () => {
   loadSavedScans();  // a fresh scan may have added a cache entry
 });
 
-// On load, show any saved scans (nothing is loaded automatically).
+// Fill the default scan path and the per-OS quick-root shortcuts from the
+// server. Also sets the platform up front so the start screen is correct even
+// before any scan runs.
+async function loadConfig() {
+  let cfg;
+  try {
+    cfg = await (await fetch("/api/config")).json();
+  } catch (e) {
+    return;  // leave the input empty; the user can still type a path
+  }
+  state.platform = cfg.platform || "";
+  state.sep = sepFor(state.platform);
+  const input = document.getElementById("path-input");
+  if (!input.value) input.value = cfg.default_root || "";
+
+  const box = document.querySelector(".shortcuts");
+  box.textContent = "";
+  for (const r of (cfg.quick_roots || [])) {
+    const b = document.createElement("button");
+    b.textContent = r.label;
+    b.title = r.path;
+    b.addEventListener("click", () => {
+      input.value = r.path;
+      startScan(r.path);
+    });
+    box.appendChild(b);
+  }
+}
+
+// On load: set up the start screen (default path, shortcuts) and list any
+// saved scans (nothing is loaded automatically).
+loadConfig();
 loadSavedScans();

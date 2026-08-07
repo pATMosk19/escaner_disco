@@ -11,15 +11,12 @@
   <section id="start">
     <h1>Escáner de disco</h1>
     <div class="row">
-      <input id="path-input" type="text" value="/System/Volumes/Data"
+      <input id="path-input" type="text" value=""
              spellcheck="false" autocomplete="off">
       <button id="scan-btn">Escanear</button>
     </div>
-    <div class="shortcuts">
-      <button data-path="~">~</button>
-      <button data-path="~/Downloads">~/Downloads</button>
-      <button data-path="~/Library">~/Library</button>
-    </div>
+    <!-- Shortcuts are filled from /api/config (per-OS quick roots). -->
+    <div class="shortcuts"></div>
     <p id="progress" class="hidden"></p>
     <p id="error" class="hidden"></p>
 
