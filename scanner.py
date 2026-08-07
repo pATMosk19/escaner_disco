@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
-"""Iterative disk usage scanner (macOS, stdlib only).
+"""Iterative disk usage scanner (cross-platform, stdlib only).
 
 Builds an in-memory tree of real on-disk sizes. Read-only: never deletes,
 moves or modifies anything. Iterative (explicit stack) to survive very deep
 paths without RecursionError.
 
 Nodes are `Node` objects with `__slots__` and store only the entry name (not
-the full path) to keep memory down; the path is reconstructed by concatenating
-names while walking down from the scan root.
+the full path) to keep memory down; the path is reconstructed with
+os.path.join while walking down from the scan root.
 
-To scan outside your home folder you must grant Full Disk Access to the app
-that launches this (Terminal, iTerm or VS Code) in
-System Settings -> Privacy & Security -> Full Disk Access.
+Everything OS-specific (default root, exclusions, on-disk size measurement)
+lives in platform_support; this module stays platform-agnostic. Permissions
+needed to scan outside your home folder differ per OS — see the README.
 """
 
 import argparse
@@ -20,14 +20,7 @@ import os
 import sys
 import time
 
-# Default exclusions. Editable. Absolute paths are matched exactly; the
-# ".Snapshot" rule matches any path segment starting with that prefix.
-DEFAULT_EXCLUDES = [
-    "/dev",
-    "/Volumes",
-    "/private/var/vm",
-    "/System/Volumes/VM",
-]
+import platform_support
 
 # Max direct children kept per directory. The rest are collapsed into a single
 # synthetic "Otros" node AT SCAN TIME and their subtrees are discarded (that is
@@ -68,17 +61,11 @@ def human(size):
 
 
 def _excluded(path, root, excludes):
-    """True if path must be skipped."""
-    if path in excludes:
+    """True if path must be skipped. `excludes` is already case-normalised."""
+    if platform_support.norm(path) in excludes:
         return True
-    # /System/Volumes/Data double-counts / via APFS firmlinks.
-    if root == "/" and path == "/System/Volumes/Data":
-        return True
-    # Any segment starting with .Snapshot (e.g. .Snapshot, .SnapshotXXX).
-    for segment in path.split(os.sep):
-        if segment.startswith(".Snapshot"):
-            return True
-    return False
+    # OS-specific quirks (firmlink double-count, .Snapshot, Windows junk).
+    return platform_support.excluded_here(path, root)
 
 
 def _finalize(node):
@@ -110,7 +97,8 @@ def scan(root, excludes=None, callback=None):
     callback(files_seen, current_path) is invoked every 20,000 entries.
     """
     root = os.path.abspath(root)
-    excludes = set(DEFAULT_EXCLUDES if excludes is None else excludes)
+    src = platform_support.default_excludes() if excludes is None else excludes
+    excludes = {platform_support.norm(p) for p in src}
 
     stats = {"files": 0, "errors": 0, "seconds": 0.0, "error_paths": []}
     seen_inodes = set()  # (st_dev, st_ino) for hardlink dedup
@@ -119,7 +107,7 @@ def scan(root, excludes=None, callback=None):
     def record_error(path):
         stats["errors"] += 1
         if len(stats["error_paths"]) < MAX_ERROR_PATHS:
-            stats["error_paths"].append(path)
+            stats["error_paths"].append(platform_support.strip_extended(path))
 
     try:
         root_st = os.stat(root, follow_symlinks=False)
@@ -131,8 +119,9 @@ def scan(root, excludes=None, callback=None):
 
     # Frame: [node, entries, idx, dirpath]. entries is None until listed.
     # dirpath is kept only to feed os.scandir and the exclude/volume checks;
-    # it is never stored on the Node.
-    stack = [[root_node, None, 0, root]]
+    # it is never stored on the Node. On Windows the walk root carries the
+    # \\?\ long-path prefix (stripped from anything shown to the client).
+    stack = [[root_node, None, 0, platform_support.extended_path(root)]]
 
     while stack:
         frame = stack[-1]
@@ -163,7 +152,7 @@ def scan(root, excludes=None, callback=None):
         frame[2] += 1
         stats["files"] += 1
         if stats["files"] % 20000 == 0 and callback:
-            callback(stats["files"], entry.path)
+            callback(stats["files"], platform_support.strip_extended(entry.path))
 
         try:
             st = entry.stat(follow_symlinks=False)
@@ -175,8 +164,12 @@ def scan(root, excludes=None, callback=None):
             node.children.append(Node(entry.name, 0, 1, False, None))
             continue
 
+        # Clean path (no \\?\ prefix) for exclusion/comparison; entry.path keeps
+        # the prefix so os.scandir keeps working past 260 chars on Windows.
+        clean = platform_support.strip_extended(entry.path)
+
         if entry.is_dir(follow_symlinks=False):
-            if _excluded(entry.path, root, excludes):
+            if _excluded(clean, root, excludes):
                 continue
             if st.st_dev != root_dev:
                 continue  # do not cross volumes
@@ -185,21 +178,29 @@ def scan(root, excludes=None, callback=None):
             stack.append([child, None, 0, entry.path])
             continue
 
-        # Regular file: count once, dedup hardlinks.
-        if st.st_nlink > 1:
+        # Files can also be excluded (Windows pagefile.sys, hiberfil.sys, ...).
+        if platform_support.excluded_here(clean, root):
+            continue
+
+        # Regular file: count once, dedup hardlinks. st_ino can be 0 on some
+        # filesystems; when it is, dedup is impossible, so count the file.
+        if st.st_nlink > 1 and st.st_ino != 0:
             key = (st.st_dev, st.st_ino)
             if key in seen_inodes:
                 node.children.append(Node(entry.name, 0, 1, False, None))
                 continue
             seen_inodes.add(key)
-        node.children.append(Node(entry.name, st.st_blocks * 512, 1, False, None))
+        size = platform_support.disk_size(st, entry.path)
+        node.children.append(Node(entry.name, size, 1, False, None))
 
     stats["seconds"] = time.time() - started
     return root_node, stats
 
 
 def _join(path, name):
-    return "/" + name if path == "/" else path + "/" + name
+    # os.path.join handles the drive-root case (C:\ + Users -> C:\Users) that
+    # naive "path + sep + name" would turn into a relative "C:Users".
+    return os.path.join(path, name)
 
 
 def _is_synthetic(node):
@@ -258,8 +259,18 @@ def _print_summary(root_path, node, stats):
 
 
 def main():
+    notes = {
+        "macos": "To scan outside your home folder, grant Full Disk Access to "
+                 "the launching app (Terminal, iTerm, VS Code) in System "
+                 "Settings -> Privacy & Security -> Full Disk Access.",
+        "windows": "To scan protected system areas, run this from an elevated "
+                   "(Administrator) command prompt.",
+        "linux": "To scan paths you don't own, run with sufficient privileges "
+                 "(e.g. sudo).",
+    }
     parser = argparse.ArgumentParser(
         description=__doc__,
+        epilog=notes.get(platform_support.platform_id(), notes["linux"]),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("path", help="Directory to scan")
