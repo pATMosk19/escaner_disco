@@ -4,7 +4,8 @@
 # escaner_disco
 
 Un analizador de uso de disco local y de solo lectura para macOS, Windows y
-Linux, con un gráfico sunburst navegable. Sin dependencias.
+Linux, con un gráfico navegable — se alterna entre una vista **sunburst** y una
+**treemap** de los mismos datos. Sin dependencias.
 
 <!-- Captura pendiente de añadir por el autor; colócala en docs/screenshot.png -->
 ![captura](docs/screenshot.png)
@@ -53,6 +54,12 @@ Abre <http://127.0.0.1:8765>, escribe una ruta (el valor por defecto y los
 accesos rápidos se rellenan según el SO desde `/api/config`) y pulsa
 **Escanear**. Páralo con `Ctrl-C` en la terminal donde corre. El puerto es
 configurable: `python3 server.py --port 9000`.
+
+Sobre el gráfico, dos pestañas alternan entre las vistas **Sunburst** y
+**Treemap**. Al cambiar se conservan la carpeta actual, el breadcrumb, la lista
+y el zoom — solo cambia el renderizador, y los colores se mantienen (lo que es
+azul en una vista sigue siendo azul en la otra). La elección se recuerda entre
+sesiones.
 
 También hay un modo CLI que imprime el top 20 y un resumen, o vuelca el árbol
 completo como JSON:
@@ -172,12 +179,27 @@ los hijos **antes** de podar, así que el total del escaneo nunca cambia. Subir
 la constante exige reescanear, porque los subárboles descartados ya no están en
 memoria.
 
+**Treemap: squarified, dos niveles.** El treemap es una alternativa al sunburst
+sobre el mismo árbol, en pestañas y no en paralelo — en un portátil de 13" dos
+gráficos simultáneos dejan cada uno demasiado pequeño para leerse. El algoritmo
+es un treemap *squarified* (Bruls, Huizing & van Wijk), no slice-and-dice: con
+40 hijos de tamaños muy dispares, slice-and-dice produce tiras de 2px ilegibles
+e imposibles de clicar, mientras que squarify mantiene cada rectángulo cerca del
+cuadrado. Anida **dos** niveles — los hijos directos con una cabecera, y sus
+hijos dentro — y no más: ver los nietos es donde el treemap gana al sunburst (se
+lee de un vistazo que el peso está en `Library/Caches/algo` sin bajar), pero un
+tercer nivel sería confeti. Los umbrales lo mantienen honesto: un rectángulo de
+nivel 1 de menos de 60×40px se pinta macizo en vez de subdividirse, nada con
+menos de 3px de lado se dibuja, y el texto solo se pinta si cabe entero — sin
+elipsis a mitad de palabra, el tooltip cuenta el resto.
+
 **Qué significa una carpeta con candado.** Una carpeta con candado es un
 directorio que no se pudo abrir (normalmente un error de permisos). Muestra un
 guion, no `0 B` — `0 B` significaría "está vacía", y la verdad es "no he podido
-mirar dentro". No se dibuja en el sunburst porque su tamaño es 0; darle un
-mínimo artificial falsearía el gráfico. La lista y el banner son el canal para
-esa información.
+mirar dentro". No se dibuja en ninguno de los dos gráficos porque su tamaño es
+0: en el treemap, igual que en el sunburst, una carpeta ilegible tiene área cero
+y simplemente no aparece; darle un mínimo artificial falsearía el gráfico. La
+lista y el banner son el canal para esa información.
 
 **Nunca toca tus ficheros; solo gestiona los suyos.** Hasta ahora "solo lectura"
 mezclaba dos promesas. Primera: la app nunca modifica *tus* ficheros — absoluto,
@@ -216,7 +238,7 @@ escaner_disco/
 ├── cache.py            # caché en disco (gzip+json) de los árboles escaneados
 ├── static/
 │   ├── index.html
-│   ├── app.js          # sunburst, lista, breadcrumb, banner, UI de caché
+│   ├── app.js          # sunburst, treemap, lista, breadcrumb, banner, UI de caché
 │   └── style.css
 ├── docs/               # especificaciones originales por sesión (en español)
 ├── LICENSE
@@ -227,7 +249,7 @@ escaner_disco/
 ## Docs
 
 `docs/` contiene las especificaciones originales por sesión (de `PROMPT-S1.md`
-a `PROMPT-S6.md`), escritas en español. Registran cómo se construyó el proyecto
+a `PROMPT-S7.md`), escritas en español. Registran cómo se construyó el proyecto
 sesión a sesión.
 
 ## Licencia

@@ -3,7 +3,8 @@
 # escaner_disco
 
 A local, read-only disk usage analyzer for macOS, Windows and Linux with a
-navigable sunburst chart. No dependencies.
+navigable chart — switch between a **sunburst** and a **treemap** view of the
+same data. No dependencies.
 
 <!-- Screenshot to be added by the author; place the file at docs/screenshot.png -->
 ![screenshot](docs/screenshot.png)
@@ -52,6 +53,11 @@ Open <http://127.0.0.1:8765>, type a path (the default and the quick links are
 filled in per OS from `/api/config`) and press **Escanear**. Stop it with
 `Ctrl-C` in the terminal where it runs. The port is configurable:
 `python3 server.py --port 9000`.
+
+Above the chart, two tabs switch between the **Sunburst** and **Treemap**
+views. Switching keeps the current folder, breadcrumb, list and zoom — only the
+renderer changes, and the colours carry over (what is blue in one view is blue
+in the other). The choice is remembered across sessions.
 
 There is also a CLI mode that prints the top 20 and a summary, or dumps the full
 tree as JSON:
@@ -169,12 +175,27 @@ most of it is tiny subtrees nobody ever looks at. Each directory keeps only its
 constant requires re-scanning, because the discarded subtrees are no longer in
 memory.
 
+**Treemap: squarified, two levels deep.** The treemap is an alternative to the
+sunburst over the same tree, in tabs rather than side by side — on a 13" laptop
+two live charts leave each too small to read. The layout is a *squarified*
+treemap (Bruls, Huizing & van Wijk), not slice-and-dice: slice-and-dice with 40
+children of very different sizes produces 2px-wide strips that are illegible and
+impossible to click, while squarify keeps every tile close to square. It nests
+**two** levels — direct children with a header, and their children inside — and
+no deeper: seeing the grandchildren is where the treemap beats the sunburst (you
+read at a glance that the weight is in `Library/Caches/something` without
+drilling), but a third level would be confetti. Thresholds keep it honest: a
+level-1 cell under 60×40px is painted solid instead of subdivided, nothing
+thinner than 3px on any side is drawn at all, and text is drawn only when it fits
+the tile whole — no mid-word ellipsis, the tooltip carries the rest.
+
 **What a locked folder means.** A folder shown with a lock is a directory that
 could not be opened (typically a permissions error). It shows a dash, not
 `0 B` — `0 B` would mean "it is empty", and the truth is "I could not look
-inside". It is not drawn in the sunburst because its size is 0; giving it an
-artificial minimum size would falsify the chart. The list and the banner are the
-channel for that information.
+inside". It is not drawn in either chart because its size is 0: in the treemap,
+just as in the sunburst, an unreadable folder has zero area and simply doesn't
+appear; giving it an artificial minimum size would falsify the chart. The list
+and the banner are the channel for that information.
 
 **Never touches your files; manages only its own.** Two promises used to hide
 under "read-only". First: the app never modifies *your* files — absolute, no
@@ -213,7 +234,7 @@ escaner_disco/
 ├── cache.py            # on-disk gzip+json cache of scanned trees
 ├── static/
 │   ├── index.html
-│   ├── app.js          # sunburst, list, breadcrumb, error banner, cache UI
+│   ├── app.js          # sunburst, treemap, list, breadcrumb, error banner, cache UI
 │   └── style.css
 ├── docs/               # original per-session specs (in Spanish)
 ├── LICENSE
@@ -224,7 +245,7 @@ escaner_disco/
 ## Docs
 
 `docs/` contains the original per-session specifications (`PROMPT-S1.md`
-through `PROMPT-S6.md`), written in Spanish. They record how the project was
+through `PROMPT-S7.md`), written in Spanish. They record how the project was
 built session by session.
 
 ## License
