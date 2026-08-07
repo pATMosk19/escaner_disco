@@ -91,6 +91,27 @@ def _finalize(node):
         ))
 
 
+def _warn_if_no_descent(root, root_node):
+    """Guard against a silently empty scan.
+
+    A scan that never descended looks identical to a correct scan of a tiny
+    flat folder (the S8 Windows bug produced 22 files, 0 errors, no trace). If
+    the root has at least one subdirectory but none was walked, warn loudly on
+    stderr. This only warns: it never aborts nor changes the exit code.
+    """
+    if any(c.is_dir for c in (root_node.children or [])):
+        return  # at least one subdirectory made it into the tree
+    try:
+        with os.scandir(platform_support.extended_path(root)) as it:
+            has_subdir = any(e.is_dir(follow_symlinks=False) for e in it)
+    except OSError:
+        return  # can't tell; stay quiet rather than cry wolf
+    if has_subdir:
+        print(f"WARNING: scan of {root!r} did not descend into any of its "
+              "subdirectories. The result is almost certainly incomplete.",
+              file=sys.stderr)
+
+
 def scan(root, excludes=None, callback=None):
     """Scan root and return (root_node, stats).
 
@@ -113,7 +134,6 @@ def scan(root, excludes=None, callback=None):
         root_st = os.stat(root, follow_symlinks=False)
     except OSError as exc:
         raise SystemExit(f"Cannot stat root {root}: {exc}")
-    root_dev = root_st.st_dev
 
     root_node = Node(os.path.basename(root) or root, 0, 0, True, [])
 
@@ -171,7 +191,9 @@ def scan(root, excludes=None, callback=None):
         if entry.is_dir(follow_symlinks=False):
             if _excluded(clean, root, excludes):
                 continue
-            if st.st_dev != root_dev:
+            # Volume boundary check is platform-specific: on Windows scandir
+            # leaves st_dev at 0, so a raw st_dev compare drops every subdir.
+            if not platform_support.same_volume(root, root_st, clean, st):
                 continue  # do not cross volumes
             child = Node(entry.name, 0, 0, True, [])
             node.children.append(child)
@@ -193,6 +215,7 @@ def scan(root, excludes=None, callback=None):
         size = platform_support.disk_size(st, entry.path)
         node.children.append(Node(entry.name, size, 1, False, None))
 
+    _warn_if_no_descent(root, root_node)
     stats["seconds"] = time.time() - started
     return root_node, stats
 
