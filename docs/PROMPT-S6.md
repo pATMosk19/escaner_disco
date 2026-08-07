@@ -229,7 +229,7 @@ Este mismo fichero.
 ### 5.4 Saneado
 
 ```zsh
-grep -rn "enri_ps" . --exclude-dir=.git
+grep -rn "TU_USUARIO" . --exclude-dir=.git
 ```
 
 No debe devolver nada.
@@ -260,7 +260,7 @@ No debe devolver nada.
 
 10. El `grep` de la sección "Regla que gobierna toda la sesión" no devuelve nada
     fuera de `platform_support.py`.
-11. `grep -rn "enri_ps" . --exclude-dir=.git` vacío.
+11. `grep -rn "TU_USUARIO" . --exclude-dir=.git` vacío.
 
 ---
 
