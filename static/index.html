@@ -32,11 +32,12 @@
     <nav id="breadcrumb"></nav>
     <div id="freshness" class="hidden"></div>
     <div id="error-banner" class="hidden"></div>
+    <!-- Sunburst | Treemap switch. Buttons are built in app.js. -->
+    <div id="view-tabs" role="group" aria-label="Vista del gráfico"></div>
     <div class="panels">
-      <div id="chart-panel">
-        <svg id="sunburst" viewBox="0 0 1000 1000"
-             xmlns="http://www.w3.org/2000/svg"></svg>
-      </div>
+      <!-- The active chart (sunburst or treemap) is mounted here by app.js;
+           the inactive one is removed from the DOM, not just hidden. -->
+      <div id="chart-panel"></div>
       <div id="list-panel">
         <table id="list">
           <tbody></tbody>

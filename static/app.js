@@ -9,6 +9,13 @@ const RING_W = (MAX_R - CENTER_R) / RINGS;
 const MIN_ANGLE = 0.5;     // don't draw sectors narrower than this (degrees)
 
 // --- App state ---
+const VIEW_KEY = "escaner_disco.view";
+function loadView() {
+  try {
+    return localStorage.getItem(VIEW_KEY) === "treemap" ? "treemap" : "sunburst";
+  } catch (e) { return "sunburst"; }  // invalid/blocked storage -> sunburst
+}
+
 const state = {
   rootPath: "",   // absolute root of the scan
   current: null,  // current node (centre), pruned subtree from /api/node
@@ -16,6 +23,7 @@ const state = {
   scannedAt: 0,   // epoch seconds the active tree was scanned
   platform: "",   // "macos" | "windows" | "linux"
   sep: "/",       // path separator for this platform
+  view: loadView(), // "sunburst" | "treemap" — remembered across sessions
 };
 
 // Path separator per platform. Windows paths from the server use backslashes.
@@ -94,8 +102,28 @@ function layout(node, depth, a0, a1, hue, rootChildPath, sectors) {
 }
 
 // --- Rendering ---
-const svg = document.getElementById("sunburst");
+const NS = "http://www.w3.org/2000/svg";
+function makeSvg(id, viewBox) {
+  const s = document.createElementNS(NS, "svg");
+  s.setAttribute("id", id);
+  s.setAttribute("viewBox", viewBox);
+  return s;
+}
+// Both charts live off-DOM until mounted. Only one is ever in the document at a
+// time (see renderChart) so we never keep two live SVG trees around.
+const sunburstSvg = makeSvg("sunburst", "0 0 1000 1000");
+const treemapSvg = makeSvg("treemap", "0 0 1200 900");
+const svg = sunburstSvg;  // sunburst code below refers to `svg`
+// Treemap events are delegated on the container (one listener each), not per
+// rect — the worst case is ~1600 rects.
+treemapSvg.addEventListener("mousemove", onTreemapMove);
+treemapSvg.addEventListener("mouseleave", clearHover);
+treemapSvg.addEventListener("click", onTreemapClick);
+
 const tooltip = document.getElementById("tooltip");
+
+// The chart element currently mounted; hover/highlight code is chart-agnostic.
+function chartEl() { return state.view === "treemap" ? treemapSvg : sunburstSvg; }
 
 // Name of the OS file manager, for button labels and confirmations.
 function fileManager() {
@@ -111,14 +139,25 @@ function isNavigable(node) {
 
 function render() {
   renderBreadcrumb();
-  renderSunburst();
+  renderTabs();
+  renderChart();
   renderList();
+}
+
+// Mount the active chart, unmount (and empty) the other so no stale SVG tree
+// keeps consuming memory or layout time.
+function renderChart() {
+  const panel = document.getElementById("chart-panel");
+  const [show, hide] = state.view === "treemap"
+    ? [treemapSvg, sunburstSvg] : [sunburstSvg, treemapSvg];
+  if (hide.parentNode) { hide.remove(); hide.textContent = ""; }
+  if (!show.parentNode) panel.appendChild(show);
+  if (state.view === "treemap") renderTreemap(); else renderSunburst();
 }
 
 function renderSunburst() {
   const cur = state.current;
   const total = cur.size || 1;
-  const NS = "http://www.w3.org/2000/svg";
   svg.textContent = "";
 
   // Sectors
@@ -162,6 +201,195 @@ function renderSunburst() {
   sz.textContent = human(total);
   svg.appendChild(sz);
 }
+
+// --- Treemap ---
+const TM_HEADER = 18;   // px reserved at the top of a level-1 cell for its name
+const TM_PAD = 2;       // px inner padding before subdividing into grandchildren
+const TM_MIN_SIDE = 3;  // rects thinner than this on any side aren't drawn
+const TM_MIN_W = 60, TM_MIN_H = 40;  // below this a level-1 cell isn't subdivided
+
+// Squarified treemap (Bruls, Huizing & van Wijk). Pure: no DOM, no globals, so
+// it can be exercised straight from the console. items: [{size, ...}] sorted by
+// size desc; rect: {x, y, w, h}. Returns each item spread with its {x, y, w, h}.
+// Zero/negative sizes get no area, so unreadable nodes (size 0) never appear.
+function squarify(items, rect) {
+  const out = [];
+  const total = items.reduce((s, it) => s + (it.size > 0 ? it.size : 0), 0);
+  if (total <= 0 || rect.w <= 0 || rect.h <= 0) return out;
+  const scale = (rect.w * rect.h) / total;
+  const free = { x: rect.x, y: rect.y, w: rect.w, h: rect.h };
+  let i = 0;
+  const n = items.length;
+  while (i < n) {
+    if (!(items[i].size > 0)) { i++; continue; }  // sorted desc -> only trailing
+    const side = Math.min(free.w, free.h);
+    const start = i;
+    const areas = [items[i].size * scale];
+    i++;
+    // Grow the row while the next item doesn't worsen its worst aspect ratio.
+    while (i < n && items[i].size > 0) {
+      const a = items[i].size * scale;
+      if (worstRatio(areas, side) >= worstRatio(areas.concat(a), side)) {
+        areas.push(a); i++;
+      } else break;
+    }
+    // Lay the closed row along the shorter side; subtract its band from `free`.
+    const sum = areas.reduce((s, a) => s + a, 0);
+    if (free.w <= free.h) {
+      const bandH = sum / free.w;
+      let x = free.x;
+      for (let k = 0; k < areas.length; k++) {
+        const w = areas[k] / bandH;
+        out.push({ ...items[start + k], x, y: free.y, w, h: bandH });
+        x += w;
+      }
+      free.y += bandH; free.h -= bandH;
+    } else {
+      const bandW = sum / free.h;
+      let y = free.y;
+      for (let k = 0; k < areas.length; k++) {
+        const h = areas[k] / bandW;
+        out.push({ ...items[start + k], x: free.x, y, w: bandW, h });
+        y += h;
+      }
+      free.x += bandW; free.w -= bandW;
+    }
+  }
+  return out;
+}
+
+// Worst (largest) aspect ratio in a row of `areas` laid along length `side`.
+function worstRatio(areas, side) {
+  let sum = 0, max = -Infinity, min = Infinity;
+  for (const a of areas) { sum += a; if (a > max) max = a; if (a < min) min = a; }
+  const s2 = sum * sum, side2 = side * side;
+  return Math.max((side2 * max) / s2, s2 / (side2 * min));
+}
+
+let _lastPaintMs = 0;  // last treemap paint time, for the perf checkpoint
+
+function renderTreemap() {
+  const cur = state.current;
+  const panel = document.getElementById("chart-panel");
+  // viewBox follows the container's real aspect (~4:3) so tiles aren't squashed
+  // and 1 unit == 1 px, making the px thresholds above exact.
+  const VW = panel.clientWidth || 1200, VH = panel.clientHeight || 900;
+  treemapSvg.setAttribute("viewBox", `0 0 ${VW} ${VH}`);
+  treemapSvg.textContent = "";
+
+  const kids = cur.children || [];
+  // Level-1 hue by index over children (already size-desc from the server), so
+  // colours match the sunburst and the list: what was blue stays blue.
+  const items = kids.map((child, i) => ({
+    node: child, size: child.size,
+    hue: Math.round(i * 360 / Math.max(1, kids.length)),
+  }));
+
+  const t0 = performance.now();
+  const frag = document.createDocumentFragment();
+  for (const cell of squarify(items, { x: 0, y: 0, w: VW, h: VH })) drawL1Cell(cell, frag);
+  treemapSvg.appendChild(frag);  // mount the whole tree in one go
+  _lastPaintMs = performance.now() - t0;
+}
+
+function drawL1Cell(cell, frag) {
+  if (cell.w < TM_MIN_SIDE || cell.h < TM_MIN_SIDE) return;  // invisible/unclickable
+  const node = cell.node, rc = node.path;
+  const canNest = cell.w >= TM_MIN_W && cell.h >= TM_MIN_H
+    && node.is_dir && !node.synthetic && !node.unreadable
+    && (node.children || []).length > 0;
+
+  // Full cell: its own colour (also the backdrop behind grandchild gaps) and the
+  // click/hover target for the level-1 directory itself.
+  addRect(frag, cell, color(cell.hue, 1), node, rc);
+
+  if (!canNest) {
+    // Solid tile: name if it fits whole, else nothing (the tooltip tells).
+    addLabel(frag, node.name, cell.x + 4, cell.y + cell.h / 2 + 4, 13,
+             "var(--text)", cell.w - 8, cell.h);
+    return;
+  }
+
+  // Header band (darker) with name + size if it fits, then subdivide the body.
+  addRect(frag, { x: cell.x, y: cell.y, w: cell.w, h: TM_HEADER },
+          headerColor(cell.hue), node, rc);
+  const withSize = `${node.name}  ${human(node.size)}`;
+  const head = fitsText(withSize, 12, cell.w - 8) ? withSize : node.name;
+  addLabel(frag, head, cell.x + 4, cell.y + 13, 12, "var(--text)", cell.w - 8, TM_HEADER);
+
+  const body = { x: cell.x + TM_PAD, y: cell.y + TM_HEADER,
+                 w: cell.w - 2 * TM_PAD, h: cell.h - TM_HEADER - TM_PAD };
+  if (body.w < TM_MIN_SIDE || body.h < TM_MIN_SIDE) return;
+  const gitems = node.children.map((g) => ({ node: g, size: g.size }));
+  for (const gc of squarify(gitems, body)) {
+    if (gc.w < TM_MIN_SIDE || gc.h < TM_MIN_SIDE) continue;
+    // rootChild stays the level-1 path so hovering a grandchild lights its parent.
+    addRect(frag, gc, color(cell.hue, 2), gc.node, rc);
+    addLabel(frag, gc.node.name, gc.x + 3, gc.y + gc.h / 2 + 3, 11,
+             "var(--muted)", gc.w - 6, gc.h);
+  }
+}
+
+// A <rect> carrying its node and first-level ancestor path for hover/zoom.
+function addRect(frag, cell, fill, node, rootChild) {
+  const r = document.createElementNS(NS, "rect");
+  r.setAttribute("x", cell.x); r.setAttribute("y", cell.y);
+  r.setAttribute("width", cell.w); r.setAttribute("height", cell.h);
+  r.setAttribute("fill", fill);
+  r.dataset.rootChild = rootChild;
+  r._node = node;
+  frag.appendChild(r);
+}
+
+// Draw text only if it fits the box whole — no ellipsis, no overflow.
+function addLabel(frag, text, x, y, fontSize, fill, maxW, maxH) {
+  if (!fitsText(text, fontSize, maxW) || fontSize + 2 > maxH) return;
+  const t = document.createElementNS(NS, "text");
+  t.setAttribute("x", x); t.setAttribute("y", y);
+  t.setAttribute("font-size", fontSize);
+  t.setAttribute("fill", fill);
+  t.textContent = text;
+  frag.appendChild(t);
+}
+
+// Cheap width estimate — avg glyph ~0.6em. No DOM measuring (text is off-DOM).
+function fitsText(text, fontSize, maxW) {
+  return text.length * fontSize * 0.6 <= maxW;
+}
+
+function headerColor(hue) { return `hsl(${hue}, 55%, 40%)`; }
+
+// --- View tabs (Sunburst | Treemap) ---
+function renderTabs() {
+  const box = document.getElementById("view-tabs");
+  box.textContent = "";
+  for (const [v, label] of [["sunburst", "Sunburst"], ["treemap", "Treemap"]]) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "view-tab";
+    b.textContent = label;
+    b.setAttribute("aria-pressed", String(state.view === v));
+    b.addEventListener("click", () => setView(v));
+    box.appendChild(b);
+  }
+}
+
+function setView(v) {
+  if (v === state.view) return;
+  state.view = v;
+  try { localStorage.setItem(VIEW_KEY, v); } catch (e) {}
+  renderTabs();
+  renderChart();  // same node, breadcrumb and list — only the renderer changes
+}
+
+// Repaint the treemap on resize (its layout depends on the container's aspect);
+// the sunburst scales itself via viewBox. Debounced, then one rAF.
+let _resizeT;
+window.addEventListener("resize", () => {
+  if (state.view !== "treemap" || !state.current) return;
+  clearTimeout(_resizeT);
+  _resizeT = setTimeout(() => requestAnimationFrame(renderTreemap), 150);
+});
 
 function renderList() {
   const cur = state.current;
@@ -326,40 +554,60 @@ function renderBreadcrumb() {
   });
 }
 
-// --- Hover sync ---
-function onHover(e, s, pathEl) {
-  svg.classList.add("dimmed");
-  for (const el of svg.querySelectorAll("path")) el.classList.remove("highlight");
-  // Highlight all sectors sharing the same first-level ancestor.
-  for (const el of svg.querySelectorAll(`path[data-root-child="${cssEscape(s.rootChildPath)}"]`))
+// --- Hover sync (shared by sunburst and treemap) ---
+// node: the hovered element's node (may be a descendant); rootChildPath: its
+// first-level ancestor, so the list row and the whole block light up together.
+function chartHover(e, node, rootChildPath) {
+  const chart = chartEl();
+  chart.classList.add("dimmed");
+  for (const el of chart.querySelectorAll("[data-root-child]")) el.classList.remove("highlight");
+  for (const el of chart.querySelectorAll(`[data-root-child="${cssEscape(rootChildPath)}"]`))
     el.classList.add("highlight");
-  highlightRow(s.rootChildPath, true);
+  for (const tr of document.querySelectorAll("#list tr"))
+    tr.classList.toggle("highlight", tr.dataset.path === rootChildPath);
 
-  const pct = state.current.size ? (s.node.size / state.current.size * 100) : 0;
+  const pct = state.current.size ? (node.size / state.current.size * 100) : 0;
   tooltip.innerHTML =
-    `<div>${escapeHtml(s.node.name)} — ${human(s.node.size)} (${pct.toFixed(1)}%)</div>` +
-    `<div class="tt-path">${escapeHtml(s.node.path)}</div>`;
+    `<div>${escapeHtml(node.name)} — ${human(node.size)} (${pct.toFixed(1)}%)</div>` +
+    `<div class="tt-path">${escapeHtml(node.path)}</div>`;
   tooltip.classList.remove("hidden");
   tooltip.style.left = Math.min(e.clientX + 14, window.innerWidth - 350) + "px";
   tooltip.style.top = (e.clientY + 14) + "px";
 }
 
+// Sunburst path handler.
+function onHover(e, s) { chartHover(e, s.node, s.rootChildPath); }
+
+// Treemap delegated handlers: text has pointer-events:none, so the target is a
+// <rect> (carrying _node) or the empty background.
+function onTreemapMove(e) {
+  const r = e.target.closest && e.target.closest("rect");
+  if (r && r._node) chartHover(e, r._node, r.dataset.rootChild);
+  else clearHover();
+}
+function onTreemapClick(e) {
+  const r = e.target.closest && e.target.closest("rect");
+  if (r && r._node) zoomTo(r._node);  // zoomTo ignores files/synthetic/unreadable
+}
+
 function clearHover() {
-  svg.classList.remove("dimmed");
-  for (const el of svg.querySelectorAll("path")) el.classList.remove("highlight");
+  const chart = chartEl();
+  chart.classList.remove("dimmed");
+  for (const el of chart.querySelectorAll("[data-root-child]")) el.classList.remove("highlight");
   for (const tr of document.querySelectorAll("#list tr")) tr.classList.remove("highlight");
   tooltip.classList.add("hidden");
 }
 
 function highlightRow(path, on) {
+  const chart = chartEl();
   // Highlight matching list row.
   for (const tr of document.querySelectorAll("#list tr")) {
     if (tr.dataset.path === path) tr.classList.toggle("highlight", on);
   }
-  // And matching sectors (when hovering the list).
-  for (const el of svg.querySelectorAll(`path[data-root-child="${cssEscape(path)}"]`))
+  // And matching chart elements (when hovering the list).
+  for (const el of chart.querySelectorAll(`[data-root-child="${cssEscape(path)}"]`))
     el.classList.toggle("highlight", on);
-  if (on) svg.classList.add("dimmed"); else svg.classList.remove("dimmed");
+  if (on) chart.classList.add("dimmed"); else chart.classList.remove("dimmed");
 }
 
 // --- Navigation ---
