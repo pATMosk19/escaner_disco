@@ -17,6 +17,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs, unquote
 
 import cache
+import platform_support
 import scanner
 
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
@@ -27,6 +28,7 @@ MAX_DEPTH = 5
 _lock = threading.Lock()
 _state = {
     "state": "idle",       # idle | scanning | done | error
+    "platform": platform_support.platform_id(),  # macos | windows | linux
     "root": "",            # absolute root path of the current/last scan
     "source": "",          # "scan" | "cache" — where the active tree came from
     "scanned_at": 0.0,     # epoch seconds the active tree was scanned
@@ -109,13 +111,16 @@ def _activate_cache(tree, meta):
 
 def _find(path):
     """Walk the tree from the root to the Node at `path`, or None."""
-    if _tree is None or not path.startswith(_root_path):
+    if _tree is None:
         return None
-    rel = path[len(_root_path):].strip("/")
+    # Case-insensitive prefix match on Windows (norm lowercases there).
+    if not platform_support.norm(path).startswith(platform_support.norm(_root_path)):
+        return None
+    rel = path[len(_root_path):].strip(os.sep + "/")
     node = _tree
     if not rel:
         return node
-    for seg in rel.split("/"):
+    for seg in rel.split(os.sep):
         if node.children is None:
             return None
         node = next((c for c in node.children if c.name == seg), None)
@@ -175,6 +180,15 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json({
                 "entries": cache.list_entries(),
                 "dir": cache.cache_dir(),
+            })
+            return
+        if parsed.path == "/api/config":
+            # Static, OS-specific config for the start screen (default input
+            # value and quick-root shortcuts). No lock: pure function of the OS.
+            self._send_json({
+                "platform": platform_support.platform_id(),
+                "default_root": platform_support.default_scan_root(),
+                "quick_roots": platform_support.quick_roots(),
             })
             return
         # These have side effects and are POST-only; a GET is reachable from a
@@ -296,10 +310,11 @@ class Handler(BaseHTTPRequestHandler):
         #     Anything else -> 404 and nothing runs. This is the main defense.
         #  4. Synthetic "Otros (N elementos)" nodes have no real path behind
         #     them -> 400.
-        #  5. Execution is `open -R` with an argument list and a timeout, never
-        #     shell=True and never plain `open`. Plain `open` would LAUNCH the
-        #     file's associated app; `-R` only REVEALS it in Finder. That single
-        #     flag is the line between a convenience and a remote-exec hole.
+        #  5. Execution uses platform_support.reveal_command(): an argument
+        #     list (never shell=True) that REVEALS the item in the file manager
+        #     without opening/launching it (macOS reveals the file; Windows
+        #     selects it; Linux opens the parent directory, since it has no
+        #     file-reveal that wouldn't launch the file's associated app).
         length = int(self.headers.get("Content-Length", 0))
         raw = self.rfile.read(length) if length else b""  # drain the body
 
@@ -326,7 +341,9 @@ class Handler(BaseHTTPRequestHandler):
                 return
 
         try:
-            subprocess.run(["open", "-R", path], timeout=5)
+            # We only care that the process launched. explorer.exe returns exit
+            # code 1 even on success, so the return code is deliberately ignored.
+            subprocess.run(platform_support.reveal_command(path), timeout=5)
         except (subprocess.SubprocessError, OSError) as exc:
             self._send_json({"ok": False, "error": str(exc)}, status=500)
             return

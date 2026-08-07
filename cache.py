@@ -17,6 +17,7 @@ import json
 import os
 import sys
 
+import platform_support
 import scanner
 
 FORMAT_VERSION = 1
@@ -25,14 +26,15 @@ _TREE_MARKER = ',"tree":'  # top-level "tree" key is written LAST (see _write)
 
 def cache_dir():
     """Absolute path of the app's cache directory (not created here)."""
-    base = os.path.expanduser("~/Library/Application Support")
-    return os.path.join(base, "escaner_disco")
+    return platform_support.cache_dir()
 
 
 def _ensure_dir():
     d = cache_dir()
     os.makedirs(d, mode=0o700, exist_ok=True)
     try:
+        # No-op-ish on Windows/NTFS (POSIX modes barely apply); harmless. Real
+        # protection there comes from living inside %LOCALAPPDATA%, not the mode.
         os.chmod(d, 0o700)  # enforce 0700 even if umask cleared bits at creation
     except OSError:
         pass
@@ -113,6 +115,7 @@ def save(root_path, tree, meta):
             io.TextIOWrapper(gz, encoding="utf-8") as out:
         head = {
             "format_version": FORMAT_VERSION,
+            "platform": platform_support.platform_id(),
             "root_path": _abs(root_path),
             "scanned_at": meta["scanned_at"],
             "elapsed": meta["elapsed"],
@@ -171,6 +174,13 @@ def load(root_path):
     if obj.get("format_version") != FORMAT_VERSION:
         print(f"cache: ignoring {fpath}: format_version "
               f"{obj.get('format_version')} != {FORMAT_VERSION}", file=sys.stderr)
+        return None
+    current = platform_support.platform_id()
+    if obj.get("platform") != current:
+        # A macOS cache does not describe a Windows disk (different paths,
+        # separators, size semantics). Never mix them.
+        print(f"cache: ignoring {fpath}: platform "
+              f"{obj.get('platform')!r} != {current!r}", file=sys.stderr)
         return None
     if obj.get("max_children") != scanner.MAX_CHILDREN:
         print(f"cache: ignoring {fpath}: max_children "
