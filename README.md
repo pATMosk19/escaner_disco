@@ -2,18 +2,43 @@
 
 # escaner_disco
 
-A local, read-only disk usage analyzer for macOS with a navigable sunburst
-chart. No dependencies.
+A local, read-only disk usage analyzer for macOS, Windows and Linux with a
+navigable sunburst chart. No dependencies.
 
 <!-- Screenshot to be added by the author; place the file at docs/screenshot.png -->
 ![screenshot](docs/screenshot.png)
 
 ## Requirements
 
-- macOS.
-- Python 3 (standard library only).
+- macOS, Windows or Linux.
+- Python 3 (standard library only; `ctypes`, also stdlib, is used on Windows).
 - No `pip`, no `npm`, no CDN. The frontend is vanilla HTML/CSS/JS and the
   sunburst is drawn by hand with SVG `<path>` elements.
+
+## Platform support
+
+The same `python3 server.py` runs on all three systems. Everything OS-specific
+lives in a single module, `platform_support.py`.
+
+| Feature | macOS | Windows | Linux |
+|---|---|---|---|
+| Default scan root | `/System/Volumes/Data` | system drive (`C:\`) | `/` |
+| Quick roots | Home, Downloads, `~/Library` | Home, Downloads, one per fixed drive | Home, Downloads |
+| Real on-disk size | `st_blocks * 512` | `GetCompressedFileSizeW` (one call per file, see below) | `st_blocks * 512` |
+| Reveal in file manager | reveals the file (Finder) | selects the file (Explorer) | opens the **parent directory** (`xdg-open`) |
+| Cache directory | `~/Library/Application Support/escaner_disco` | `%LOCALAPPDATA%\escaner_disco` | `$XDG_DATA_HOME` or `~/.local/share/escaner_disco` |
+
+Known limitations:
+
+- **Windows exact size.** Real occupancy uses `GetCompressedFileSizeW`, one
+  syscall per file. Set `WINDOWS_EXACT_SIZE = False` in `platform_support.py` to
+  fall back to the logical `st_size` and skip the call.
+- **Linux reveal.** There is no `-R`-style "reveal" on Linux; `xdg-open` on a
+  file would *launch* it in its associated app (which the reveal endpoint
+  forbids), so on Linux it opens the containing directory instead.
+- **Caches are not portable across systems.** A cache records paths, separators
+  and size semantics of one OS; it is tagged with the platform that wrote it and
+  ignored on load elsewhere.
 
 ## Usage
 
@@ -23,9 +48,9 @@ Start the local server:
 python3 server.py            # serves http://127.0.0.1:8765
 ```
 
-Open <http://127.0.0.1:8765>, type a path (default `/System/Volumes/Data`) or
-use the quick links (`~`, `~/Downloads`, `~/Library`) and press **Escanear**.
-Stop it with `Ctrl-C` in the terminal where it runs. The port is configurable:
+Open <http://127.0.0.1:8765>, type a path (the default and the quick links are
+filled in per OS from `/api/config`) and press **Escanear**. Stop it with
+`Ctrl-C` in the terminal where it runs. The port is configurable:
 `python3 server.py --port 9000`.
 
 There is also a CLI mode that prints the top 20 and a summary, or dumps the full
@@ -36,7 +61,14 @@ python3 scanner.py /System/Volumes/Data
 python3 scanner.py ~/Downloads --json tree.json
 ```
 
-## Full Disk Access
+## Permissions
+
+Without enough privileges the scan does **not** fail, but many system folders
+come back as permission errors and the reported total is short. The app makes
+this visible with a warning banner under the breadcrumb; expand it to see the
+unreadable paths. How to reduce those errors depends on the OS.
+
+### macOS — Full Disk Access
 
 To scan outside your home folder, macOS requires **Full Disk Access** for the
 app that launches the server, under:
@@ -50,18 +82,32 @@ Terminal and start `server.py` from there, the server inherits it; start it from
 an editor without that permission and you will see many folders locked even
 though the code is identical.
 
-Without the permission the scan does not fail, but many system folders come back
-as permission errors and the reported total is short. The app makes this visible
-with a warning banner under the breadcrumb; expand it to see the unreadable
-paths.
+### Windows — run as Administrator
+
+Protected system areas require an **elevated** command prompt. Start it with
+"Run as administrator", then `python server.py`. Note that the cache lives in
+`%LOCALAPPDATA%`, inside your user profile: on NTFS the POSIX `chmod 0600/0700`
+the app applies is almost a no-op, and the real protection is that location, not
+the file mode.
+
+### Linux — sufficient privileges
+
+To read paths you do not own, run with enough privileges (e.g. `sudo`), at the
+cost of running a local HTTP server as root. `/proc`, `/sys`, `/dev` and `/run`
+are skipped as pseudo-filesystems. `/var/lib/docker/overlay2` is **not** skipped
+and can inflate the total, because container layers share files that get counted
+under several overlays.
 
 ## Caching
 
 After each successful scan the tree is cached to disk so you don't wait ~35 s on
-every startup. The cache lives in the app's **own** directory —
-`~/Library/Application Support/escaner_disco/` — never inside the project,
-because a cache file is a full map of the names of your folders. Files are
-created `0600`, the directory `0700`.
+every startup. The cache lives in the app's **own** directory (per OS — see the
+Platform support table), never inside the project, because a cache file is a
+full map of the names of your folders. Files are created `0600`, the directory
+`0700` (on Windows/NTFS those modes barely apply; the protection there is living
+inside `%LOCALAPPDATA%`). Each cache is tagged with the platform that wrote it
+and ignored on load on a different OS — a macOS cache does not describe a Windows
+disk.
 
 Format is json + gzip, both stdlib. **Never pickle:** unpickling executes code,
 and this tool can't take that risk even in a file it wrote itself. There is one
@@ -84,12 +130,24 @@ file — never `shutil.rmtree`.
 
 ## Design decisions
 
-**Real on-disk size (`st_blocks * 512`), not `st_size`.** We want the space a
-file actually occupies — what you get back when you delete it — not its logical
-length. `st_size` ignores APFS compression and sparse files, and does not
-account for block-size rounding on tiny files. The trade-off: APFS clones share
-their blocks physically but are counted once per clone here, so cloned data is
-overcounted. `du` uses blocks for the same reason.
+**All OS-specific code in one module.** Default root, quick roots, exclusions,
+on-disk size, reveal command and cache directory all differ per system;
+`platform_support.py` is the only file that knows which OS it is running on
+(`scanner.py`, `server.py` and `cache.py` contain no `sys.platform`). One place
+to read when porting, one place to change, and the rest of the code stays
+readable without OS branches scattered through it.
+
+**Real on-disk size, not `st_size`.** We want the space a file actually occupies
+— what you get back when you delete it — not its logical length. `st_size`
+ignores compression and sparse files and does not account for block-size
+rounding on tiny files. On macOS and Linux that is `st_blocks * 512`. On Windows
+there is no `st_blocks`, so we call `GetCompressedFileSizeW` (via `ctypes`) to
+get the real footprint — the same decision as S1 (measure occupancy, not logical
+length), kept consistent across platforms. It costs one syscall per file;
+`WINDOWS_EXACT_SIZE = False` trades that accuracy for `st_size` and no extra
+call. The trade-off elsewhere: APFS clones share their blocks physically but are
+counted once per clone here, so cloned data is overcounted. `du` uses blocks for
+the same reason.
 
 **Scan `/System/Volumes/Data`, not `/`.** On APFS the root `/` is read-only and
 user data lives on `/System/Volumes/Data`, mounted over `/` through firmlinks.
@@ -125,14 +183,15 @@ own directory, that it created; "does not delete anything" and "does not delete
 anything of yours" are different promises, and the second is the one we can
 keep. `/api/cache/clear` only ever deletes the app's `*.json.gz`, and never
 accepts a path from the client. Second: no endpoint has side effects — broken on
-purpose by `POST /api/reveal` (opens Finder; `open -R` executes nothing, the
-path must be a node the scan produced, `POST`-only with an `Origin` check) and
-by the cache endpoints. Every other endpoint is still read-only.
+purpose by `POST /api/reveal` (reveals the item in the OS file manager without
+launching it, the path must be a node the scan produced, `POST`-only with an
+`Origin` check) and by the cache endpoints. Every other endpoint is still
+read-only.
 
 ## Performance
 
-Reference scan of `/System/Volumes/Data` on a test volume of ~1.2M files and
-~123 GB total, without `sudo`:
+Reference scan of `/System/Volumes/Data` on macOS, a test volume of ~1.2M files
+and ~123 GB total, without `sudo`:
 
 | Metric                          | S1     | S2         |
 |---------------------------------|--------|------------|
@@ -149,6 +208,7 @@ the entry name in each node — not from measuring less disk.
 ```
 escaner_disco/
 ├── scanner.py          # iterative, read-only disk scanner (stdlib)
+├── platform_support.py # all OS-specific behaviour (macOS/Windows/Linux)
 ├── server.py           # local HTTP server, 127.0.0.1 only
 ├── cache.py            # on-disk gzip+json cache of scanned trees
 ├── static/
@@ -164,7 +224,7 @@ escaner_disco/
 ## Docs
 
 `docs/` contains the original per-session specifications (`PROMPT-S1.md`
-through `PROMPT-S5.md`), written in Spanish. They record how the project was
+through `PROMPT-S6.md`), written in Spanish. They record how the project was
 built session by session.
 
 ## License

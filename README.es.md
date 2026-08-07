@@ -3,18 +3,43 @@
 
 # escaner_disco
 
-Un analizador de uso de disco local y de solo lectura para macOS, con un
-gráfico sunburst navegable. Sin dependencias.
+Un analizador de uso de disco local y de solo lectura para macOS, Windows y
+Linux, con un gráfico sunburst navegable. Sin dependencias.
 
 <!-- Captura pendiente de añadir por el autor; colócala en docs/screenshot.png -->
 ![captura](docs/screenshot.png)
 
 ## Requisitos
 
-- macOS.
-- Python 3 (solo biblioteca estándar).
+- macOS, Windows o Linux.
+- Python 3 (solo biblioteca estándar; en Windows se usa `ctypes`, también stdlib).
 - Sin `pip`, sin `npm`, sin CDN. El frontend es HTML/CSS/JS vanilla y el
   sunburst se dibuja a mano con elementos `<path>` de SVG.
+
+## Compatibilidad de plataformas
+
+El mismo `python3 server.py` corre en los tres sistemas. Todo lo específico de
+un sistema operativo vive en un único módulo, `platform_support.py`.
+
+| Función | macOS | Windows | Linux |
+|---|---|---|---|
+| Raíz por defecto | `/System/Volumes/Data` | unidad del sistema (`C:\`) | `/` |
+| Accesos rápidos | Home, Downloads, `~/Library` | Home, Downloads, una por unidad fija | Home, Downloads |
+| Tamaño real en disco | `st_blocks * 512` | `GetCompressedFileSizeW` (una llamada por fichero, ver abajo) | `st_blocks * 512` |
+| Mostrar en el gestor | revela el fichero (Finder) | selecciona el fichero (Explorador) | abre el **directorio padre** (`xdg-open`) |
+| Directorio de caché | `~/Library/Application Support/escaner_disco` | `%LOCALAPPDATA%\escaner_disco` | `$XDG_DATA_HOME` o `~/.local/share/escaner_disco` |
+
+Limitaciones conocidas:
+
+- **Tamaño exacto en Windows.** La ocupación real usa `GetCompressedFileSizeW`,
+  una llamada al sistema por fichero. Poniendo `WINDOWS_EXACT_SIZE = False` en
+  `platform_support.py` se usa el `st_size` lógico y se ahorra la llamada.
+- **Reveal en Linux.** No existe un "reveal" tipo `-R`; `xdg-open` sobre un
+  fichero lo *abriría* con su aplicación asociada (lo que el endpoint de reveal
+  prohíbe), así que en Linux se abre el directorio que lo contiene.
+- **Las cachés no son portables entre sistemas.** Una caché guarda rutas,
+  separadores y semántica de tamaño de un SO; se etiqueta con la plataforma que
+  la escribió y se ignora al cargarla en otra.
 
 ## Uso
 
@@ -24,10 +49,10 @@ Arranca el servidor local:
 python3 server.py            # sirve en http://127.0.0.1:8765
 ```
 
-Abre <http://127.0.0.1:8765>, escribe una ruta (por defecto
-`/System/Volumes/Data`) o usa los accesos rápidos (`~`, `~/Downloads`,
-`~/Library`) y pulsa **Escanear**. Páralo con `Ctrl-C` en la terminal donde
-corre. El puerto es configurable: `python3 server.py --port 9000`.
+Abre <http://127.0.0.1:8765>, escribe una ruta (el valor por defecto y los
+accesos rápidos se rellenan según el SO desde `/api/config`) y pulsa
+**Escanear**. Páralo con `Ctrl-C` en la terminal donde corre. El puerto es
+configurable: `python3 server.py --port 9000`.
 
 También hay un modo CLI que imprime el top 20 y un resumen, o vuelca el árbol
 completo como JSON:
@@ -37,7 +62,14 @@ python3 scanner.py /System/Volumes/Data
 python3 scanner.py ~/Downloads --json tree.json
 ```
 
-## Acceso total al disco
+## Permisos
+
+Sin privilegios suficientes el escaneo **no** falla, pero muchas carpetas del
+sistema vuelven como errores de permisos y el total sale corto. La app lo hace
+visible con un banner de aviso bajo el breadcrumb; despliégalo para ver las
+rutas no legibles. Cómo reducir esos errores depende del SO.
+
+### macOS — Acceso total al disco
 
 Para escanear fuera de tu carpeta de usuario, macOS exige **Acceso total al
 disco** para la app desde la que lanzas el servidor, en:
@@ -51,17 +83,33 @@ disco a la Terminal y arrancas `server.py` desde ahí, el servidor lo hereda; si
 lo lanzas desde un editor sin ese permiso, verás muchas carpetas con candado
 aunque el código sea idéntico.
 
-Sin el permiso el escaneo no falla, pero muchas carpetas del sistema vuelven
-como errores de permisos y el total sale corto. La app lo hace visible con un
-banner de aviso bajo el breadcrumb; despliégalo para ver las rutas no legibles.
+### Windows — ejecutar como Administrador
+
+Las zonas protegidas del sistema requieren un símbolo del sistema **elevado**.
+Ábrelo con "Ejecutar como administrador" y luego `python server.py`. Ten en
+cuenta que la caché vive en `%LOCALAPPDATA%`, dentro de tu perfil de usuario: en
+NTFS el `chmod 0600/0700` POSIX que aplica la app es casi un no-op, y la
+protección real es esa ubicación, no el modo del fichero.
+
+### Linux — privilegios suficientes
+
+Para leer rutas que no son tuyas, ejecuta con privilegios suficientes (p. ej.
+`sudo`), a costa de correr un servidor HTTP local como root. `/proc`, `/sys`,
+`/dev` y `/run` se omiten por ser pseudo-sistemas de ficheros.
+`/var/lib/docker/overlay2` **no** se omite y puede inflar el total, porque las
+capas de los contenedores comparten ficheros que se cuentan bajo varios
+overlays.
 
 ## Caché
 
 Tras cada escaneo con éxito, el árbol se cachea a disco para no esperar ~35 s en
-cada arranque. La caché vive en el directorio **propio** de la app —
-`~/Library/Application Support/escaner_disco/` — nunca dentro del proyecto,
-porque un fichero de caché es un mapa completo de los nombres de tus carpetas.
-Los ficheros se crean con `0600` y el directorio con `0700`.
+cada arranque. La caché vive en el directorio **propio** de la app (según el SO
+— ver la tabla de compatibilidad), nunca dentro del proyecto, porque un fichero
+de caché es un mapa completo de los nombres de tus carpetas. Los ficheros se
+crean con `0600` y el directorio con `0700` (en Windows/NTFS esos modos apenas
+aplican; ahí la protección es vivir dentro de `%LOCALAPPDATA%`). Cada caché se
+etiqueta con la plataforma que la escribió y se ignora al cargarla en otro SO —
+una caché de macOS no describe un disco de Windows.
 
 El formato es json + gzip, ambos de stdlib. **Nunca pickle:** deserializar
 pickle ejecuta código, y esta herramienta no puede asumir ese riesgo ni siquiera
@@ -84,13 +132,25 @@ caché, fichero a fichero — nunca `shutil.rmtree`.
 
 ## Decisiones de diseño
 
-**Tamaño real en disco (`st_blocks * 512`), no `st_size`.** Queremos el espacio
-que un archivo ocupa de verdad —lo que se libera al borrarlo—, no su tamaño
-lógico. `st_size` ignora la compresión de APFS y los archivos dispersos
-(sparse), y no cuenta el redondeo al tamaño de bloque en archivos diminutos. La
-contrapartida: los clones de APFS comparten sus bloques físicamente, pero aquí
-se cuentan una vez por clon, así que los datos clonados se cuentan de más. `du`
-usa bloques por el mismo motivo.
+**Todo el código específico del SO en un solo módulo.** Raíz por defecto,
+accesos rápidos, exclusiones, tamaño en disco, comando de reveal y directorio de
+caché difieren por sistema; `platform_support.py` es el único fichero que sabe
+en qué SO corre (`scanner.py`, `server.py` y `cache.py` no contienen ningún
+`sys.platform`). Un solo sitio que leer al portar, un solo sitio que cambiar, y
+el resto del código se lee sin ramas de SO desperdigadas.
+
+**Tamaño real en disco, no `st_size`.** Queremos el espacio que un archivo ocupa
+de verdad —lo que se libera al borrarlo—, no su tamaño lógico. `st_size` ignora
+la compresión y los archivos dispersos (sparse), y no cuenta el redondeo al
+tamaño de bloque en archivos diminutos. En macOS y Linux es `st_blocks * 512`.
+En Windows no existe `st_blocks`, así que se llama a `GetCompressedFileSizeW`
+(vía `ctypes`) para obtener la ocupación real — la misma decisión de S1 (medir
+ocupación, no tamaño lógico), mantenida coherente entre plataformas. Cuesta una
+llamada al sistema por fichero; `WINDOWS_EXACT_SIZE = False` cambia esa precisión
+por `st_size` sin llamada extra. La contrapartida en otros casos: los clones de
+APFS comparten sus bloques físicamente, pero aquí se cuentan una vez por clon,
+así que los datos clonados se cuentan de más. `du` usa bloques por el mismo
+motivo.
 
 **Escanear `/System/Volumes/Data`, no `/`.** En APFS la raíz `/` es de solo
 lectura y los datos del usuario viven en `/System/Volumes/Data`, montado sobre
@@ -126,14 +186,15 @@ caché**, en su propio directorio, que ella creó; "no borra nada" y "no borra
 nada tuyo" son promesas distintas, y la segunda es la que podemos cumplir.
 `/api/cache/clear` solo borra los `*.json.gz` de la app, y nunca acepta una ruta
 del cliente. Segunda: ningún endpoint tiene efectos laterales — rota a propósito
-por `POST /api/reveal` (abre Finder; `open -R` no ejecuta nada, la ruta tiene que
-ser un nodo que el escaneo produjo, solo `POST` con comprobación de `Origin`) y
-por los endpoints de caché. El resto de endpoints siguen siendo de solo lectura.
+por `POST /api/reveal` (revela el elemento en el gestor de archivos del SO sin
+lanzarlo, la ruta tiene que ser un nodo que el escaneo produjo, solo `POST` con
+comprobación de `Origin`) y por los endpoints de caché. El resto de endpoints
+siguen siendo de solo lectura.
 
 ## Rendimiento
 
-Escaneo de referencia de `/System/Volumes/Data` en un volumen de prueba de
-~1,2 M de archivos y ~123 GB de total, sin `sudo`:
+Escaneo de referencia de `/System/Volumes/Data` en macOS, un volumen de prueba
+de ~1,2 M de archivos y ~123 GB de total, sin `sudo`:
 
 | Métrica                         | S1     | S2         |
 |---------------------------------|--------|------------|
@@ -150,6 +211,7 @@ la entrada en cada nodo, no de medir menos disco.
 ```
 escaner_disco/
 ├── scanner.py          # escáner de disco iterativo y de solo lectura (stdlib)
+├── platform_support.py # todo lo específico del SO (macOS/Windows/Linux)
 ├── server.py           # servidor HTTP local, solo 127.0.0.1
 ├── cache.py            # caché en disco (gzip+json) de los árboles escaneados
 ├── static/
@@ -165,7 +227,7 @@ escaner_disco/
 ## Docs
 
 `docs/` contiene las especificaciones originales por sesión (de `PROMPT-S1.md`
-a `PROMPT-S5.md`), escritas en español. Registran cómo se construyó el proyecto
+a `PROMPT-S6.md`), escritas en español. Registran cómo se construyó el proyecto
 sesión a sesión.
 
 ## Licencia
