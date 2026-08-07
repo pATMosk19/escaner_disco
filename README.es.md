@@ -7,8 +7,11 @@ Un analizador de uso de disco local y de solo lectura para macOS, Windows y
 Linux, con un gráfico navegable — se alterna entre una vista **sunburst** y una
 **treemap** de los mismos datos. Sin dependencias.
 
-<!-- Captura pendiente de añadir por el autor; colócala en docs/screenshot.png -->
-![captura](docs/screenshot.png)
+![Vista sunburst](docs/screenshot.png)
+*Vista sunburst, con el banner de rutas no legibles.*
+
+![Vista treemap](docs/screenshot-treemap.png)
+*Vista treemap, anidada a dos niveles.*
 
 ## Requisitos
 

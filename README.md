@@ -6,8 +6,11 @@ A local, read-only disk usage analyzer for macOS, Windows and Linux with a
 navigable chart — switch between a **sunburst** and a **treemap** view of the
 same data. No dependencies.
 
-<!-- Screenshot to be added by the author; place the file at docs/screenshot.png -->
-![screenshot](docs/screenshot.png)
+![Sunburst view](docs/screenshot.png)
+*Sunburst view, with the unreadable-paths banner.*
+
+![Treemap view](docs/screenshot-treemap.png)
+*Treemap view, nested two levels.*
 
 ## Requirements
 
