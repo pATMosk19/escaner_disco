@@ -12,7 +12,8 @@ const MIN_ANGLE = 0.5;     // don't draw sectors narrower than this (degrees)
 const VIEW_KEY = "escaner_disco.view";
 function loadView() {
   try {
-    return localStorage.getItem(VIEW_KEY) === "treemap" ? "treemap" : "sunburst";
+    const v = localStorage.getItem(VIEW_KEY);
+    return (v === "treemap" || v === "junk") ? v : "sunburst";
   } catch (e) { return "sunburst"; }  // invalid/blocked storage -> sunburst
 }
 
@@ -137,11 +138,41 @@ function isNavigable(node) {
   return node && node.is_dir && !node.synthetic && !node.unreadable;
 }
 
+// The two main panels are held by reference so the junk tab can unmount them
+// from the DOM (S7 rule: the inactive view is removed, not display:none) and
+// re-mount them on return, preserving the current node and zoom untouched.
+const chartPanelEl = document.getElementById("chart-panel");
+const listPanelEl = document.getElementById("list-panel");
+const junkPanel = document.createElement("div");
+junkPanel.id = "junk-panel";
+
 function render() {
   renderBreadcrumb();
   renderTabs();
-  renderChart();
-  renderList();
+  if (state.view === "junk") {
+    showJunkPanel();
+    renderJunk();
+  } else {
+    showMainPanels();
+    renderChart();
+    renderList();
+  }
+}
+
+// Chart+list mounted, junk panel gone.
+function showMainPanels() {
+  const panels = document.querySelector(".panels");
+  if (junkPanel.parentNode) { junkPanel.remove(); junkPanel.textContent = ""; }
+  if (!chartPanelEl.parentNode) panels.appendChild(chartPanelEl);
+  if (!listPanelEl.parentNode) panels.appendChild(listPanelEl);
+}
+
+// Junk panel mounted (full width), chart+list removed from the DOM.
+function showJunkPanel() {
+  const panels = document.querySelector(".panels");
+  if (chartPanelEl.parentNode) chartPanelEl.remove();
+  if (listPanelEl.parentNode) listPanelEl.remove();
+  if (!junkPanel.parentNode) panels.appendChild(junkPanel);
 }
 
 // Mount the active chart, unmount (and empty) the other so no stale SVG tree
@@ -363,7 +394,7 @@ function headerColor(hue) { return `hsl(${hue}, 55%, 40%)`; }
 function renderTabs() {
   const box = document.getElementById("view-tabs");
   box.textContent = "";
-  for (const [v, label] of [["sunburst", "Sunburst"], ["treemap", "Treemap"]]) {
+  for (const [v, label] of [["sunburst", "Sunburst"], ["treemap", "Treemap"], ["junk", "Basura"]]) {
     const b = document.createElement("button");
     b.type = "button";
     b.className = "view-tab";
@@ -378,8 +409,9 @@ function setView(v) {
   if (v === state.view) return;
   state.view = v;
   try { localStorage.setItem(VIEW_KEY, v); } catch (e) {}
-  renderTabs();
-  renderChart();  // same node, breadcrumb and list — only the renderer changes
+  // Full re-render: it swaps chart/list <-> junk panels and keeps the current
+  // node and zoom in state.current untouched, so returning restores them.
+  render();
 }
 
 // Repaint the treemap on resize (its layout depends on the container's aspect);
@@ -434,6 +466,91 @@ function renderList() {
     tr.addEventListener("click", () => zoomTo(child));
     tbody.appendChild(tr);
   });
+}
+
+// --- Junk tab (regenerable data) ---
+// A whole-scan view: it does not depend on the current node or breadcrumb, so
+// it replaces both panels. It NEVER offers to delete: no checkbox, no "free
+// space" button. If a design asks for one, the design is wrong (S10 decision 1).
+async function renderJunk() {
+  junkPanel.textContent = "";
+  let data;
+  try {
+    data = await (await fetch("/api/junk")).json();
+  } catch (e) {
+    junkPanel.textContent = "No se pudieron cargar los datos.";
+    return;
+  }
+  if (state.view !== "junk") return;  // tab changed while awaiting
+  const cats = data.categories || [];
+  if (cats.length === 0) {
+    // Neutral: not an achievement, not an error. (A pre-v2 cache can't reach
+    // the client — it is refused at load — so no "rescan needed" branch here.)
+    const p = document.createElement("p");
+    p.className = "junk-empty";
+    p.textContent = "No se han encontrado carpetas regenerables en este escaneo.";
+    junkPanel.appendChild(p);
+    return;
+  }
+  const head = document.createElement("div");
+  head.className = "junk-total";
+  head.textContent = `${human(data.total_size)} en ${cats.length} ` +
+    (cats.length === 1 ? "categoría" : "categorías");
+  junkPanel.appendChild(head);
+  for (const c of cats) junkPanel.appendChild(buildJunkCategory(c));
+}
+
+// Native <details> disclosure — no custom toggle state to track.
+function buildJunkCategory(c) {
+  const det = document.createElement("details");
+  det.className = "junk-cat";
+  const sum = document.createElement("summary");
+  const dirs = c.n_paths;
+  sum.innerHTML =
+    `<span class="jc-label">${escapeHtml(c.label)}</span>` +
+    `<span class="jc-size">${human(c.total_size)}</span>` +
+    `<span class="jc-dirs">${dirs.toLocaleString()} ${dirs === 1 ? "carpeta" : "carpetas"}</span>`;
+  det.appendChild(sum);
+
+  const why = document.createElement("div");
+  why.className = "jc-why";
+  why.textContent = c.why;  // lets the user disagree with a category on its merits
+  det.appendChild(why);
+
+  const list = document.createElement("div");
+  list.className = "jc-paths";
+  for (const p of c.paths) list.appendChild(buildJunkRow(p));
+  if (c.truncated) {
+    const more = document.createElement("div");
+    more.className = "jc-more";
+    more.textContent = `… y ${(c.n_paths - c.paths.length).toLocaleString()} más ` +
+      `(se muestran las ${c.paths.length} mayores de ${c.n_paths.toLocaleString()})`;
+    list.appendChild(more);
+  }
+  det.appendChild(list);
+  return det;
+}
+
+function buildJunkRow(p) {
+  const row = document.createElement("div");
+  row.className = "jc-row";
+  // actionButton wants an object with .name/.path; reuse the exact S4 buttons.
+  const child = { name: p.path, path: p.path };
+  const label = document.createElement("span");
+  label.className = "jc-path";
+  label.textContent = p.path;
+  label.title = p.path;
+  const size = document.createElement("span");
+  size.className = "jc-rowsize";
+  size.textContent = human(p.size);
+  const actions = document.createElement("div");
+  actions.className = "jc-actions";
+  actions.append(
+    actionButton(ICON_REVEAL, `Mostrar en ${fileManager()}`, child, () => reveal(p.path, row)),
+    actionButton(ICON_COPY, "Copiar ruta", child, () => copyPath(p.path, row)),
+  );
+  row.append(label, size, actions);
+  return row;
 }
 
 // --- Row actions (reveal in Finder / copy path) ---

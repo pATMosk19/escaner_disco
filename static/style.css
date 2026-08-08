@@ -211,6 +211,35 @@ button:hover { filter: brightness(1.1); }
 .view-tab:hover { filter: none; color: var(--text); }
 .view-tab[aria-pressed="true"] { color: var(--text); border-color: var(--accent); }
 
+/* Junk tab (regenerable data): a full-width whole-scan view. No delete UI. */
+#junk-panel { flex: 1; overflow-y: auto; min-width: 0; padding: 0 4px; }
+.junk-total { font-weight: 600; margin: 4px 2px 12px; }
+.junk-empty { color: var(--muted); padding: 12px 2px; }
+
+details.junk-cat { border: 1px solid var(--border); border-radius: 6px; margin-bottom: 6px; }
+.junk-cat summary {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 10px; cursor: pointer; list-style: none;
+}
+.junk-cat summary::-webkit-details-marker { display: none; }
+.junk-cat summary::before { content: "▸"; color: var(--muted); flex: 0 0 auto; }
+.junk-cat[open] summary::before { content: "▾"; }
+.jc-label { flex: 1 1 auto; min-width: 0; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.jc-size { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.jc-dirs { color: var(--muted); white-space: nowrap; }
+.jc-why { color: var(--muted); font-size: 12px; padding: 0 10px 8px 27px; }
+.jc-paths { padding: 0 10px 6px 27px; }
+.jc-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 4px 0; border-top: 1px solid var(--border);
+}
+.jc-path { flex: 1 1 auto; min-width: 0; font-family: ui-monospace, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.jc-rowsize { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+/* Same on-hover reveal as the S4 list rows; reuses the .row-action button style. */
+.jc-actions { display: flex; gap: 4px; flex: 0 0 auto; opacity: 0; pointer-events: none; transition: opacity .1s; }
+.jc-row:hover .jc-actions, .jc-row:focus-within .jc-actions { opacity: 1; pointer-events: auto; }
+.jc-more { color: var(--muted); font-size: 12px; padding: 6px 0 2px; }
+
 /* Tooltip */
 #tooltip {
   position: fixed;
