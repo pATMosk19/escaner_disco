@@ -151,6 +151,63 @@ los ficheros de caché. Los dos POST llevan comprobación de `Origin` y son solo
 dice "borra", no "borra esto") y solo borra `*.json.gz` dentro del directorio de
 caché, fichero a fichero — nunca `shutil.rmtree`.
 
+Subir a `format_version = 2` (S10, la clave `junk` de abajo) invalida todas las
+cachés escritas por S5–S9: no llevan el campo y no pueden inventárselo, así que
+se ignoran al cargar con un aviso, igual que una plataforma o `max_children`
+distintos. Tras actualizar hace falta un rescaneo, en Mac y en PC.
+
+## Datos regenerables
+
+Durante el escaneo, la app señala directorios **regenerables** — cachés,
+intermedios de compilación, paquetes descargados — y los agrega por categoría en
+una tercera pestaña, *Basura*. **La app no borra nada.** La única acción sobre
+una ruta señalada es "Mostrar en el gestor de archivos" (el `POST /api/reveal` de
+S4); tú decides qué borrar, a mano, en Finder/Explorador.
+
+La detección ocurre **durante** el escaneo, no después: el árbol se poda a
+`MAX_CHILDREN` al construirlo, así que las muchas carpetas de basura pequeñas ya
+están colapsadas en nodos "Otros" cuando un análisis posterior podría verlas. A
+un directorio se le atribuye su subárbol **entero** y se deja de detectar dentro
+de él, de modo que un `node_modules` anidado en otro `node_modules` no suma dos
+veces. Por categoría, el total en bytes y el número de directorios son exactos;
+la lista de rutas guardadas se limita a las 20 mayores (`MAX_JUNK_PATHS`), con
+`truncated: true` cuando hay más.
+
+Las reglas son **explícitas, nunca heurísticas** — cada categoría dice, en una
+línea, por qué es seguro regenerarla, para que puedas discrepar de una categoría
+por sus méritos en vez de fiarte de una caja negra:
+
+| Regla (`id`) | Tipo | Coincide con | Por qué es regenerable |
+|---|---|---|---|
+| `node_modules` | name | `node_modules` | Regenerable con `npm install` desde `package.json` |
+| `__pycache__` | name | `__pycache__` | Bytecode, se regenera al ejecutar |
+| `venv` | name | `venv`, `.venv` | Regenerable desde `requirements.txt` |
+| `pytest_cache` | name | `.pytest_cache` | Caché del test runner |
+| `mypy_cache` | name | `.mypy_cache` | Caché del type checker |
+| `ruff_cache` | name | `.ruff_cache` | Caché del linter |
+| `derived_data` | name | `DerivedData` | Xcode: índices y builds intermedios |
+| `user_caches` | path (macOS) | `~/Library/Caches` | Caché de aplicaciones, se rehace sola |
+| `system_caches` | path (macOS) | `/Library/Caches` | Ídem a nivel de sistema |
+| `user_logs` | path (macOS) | `~/Library/Logs` | Logs históricos de aplicaciones |
+| `ios_device_support` | path (macOS) | `~/Library/Developer/Xcode/iOS DeviceSupport` | Símbolos de versiones de iOS que ya no se usan |
+| `core_simulator` | path (macOS) | `~/Library/Developer/CoreSimulator` | Runtimes de simulador descargados |
+| `npm_cache` | path (macOS) | `~/.npm/_cacache` | Caché de paquetes npm |
+| `xdg_cache` | path (macOS/Linux) | `~/.cache` | Convención Unix, herramientas varias |
+| `docker_data` | path (macOS) | `~/Library/Containers/com.docker.docker/Data` | Imágenes y volúmenes de Docker |
+| `user_temp` | path (Windows) | `%LOCALAPPDATA%\Temp` | Temporales de usuario |
+| `system_temp` | path (Windows) | `C:\Windows\Temp` | Temporales de sistema |
+| `windows_update` | path (Windows) | `C:\Windows\SoftwareDistribution\Download` | Instaladores de actualizaciones ya aplicadas |
+| `package_cache` | path (Windows) | `%LOCALAPPDATA%\Package Cache` | Instaladores conservados por Visual Studio |
+| `npm_cache` | path (Windows) | `%LOCALAPPDATA%\npm-cache` | Caché de paquetes npm |
+| `pip_cache` | path (Windows) | `%LOCALAPPDATA%\pip\Cache` | Caché de pip |
+| `apt_archives` | path (Linux) | `/var/cache/apt/archives` | Paquetes `.deb` descargados, `apt clean` los regenera |
+
+Las reglas `name` casan con el basename de un directorio en cualquier ubicación
+(sensibilidad a mayúsculas según el SO); las `path` casan con una ruta absoluta
+exacta (expandida una vez por proceso; una ruta cuya variable de entorno falte se
+descarta en silencio). Un único endpoint `GET /api/junk` sirve el resumen; es de
+solo lectura y devuelve 404 si no hay árbol activo.
+
 ## Decisiones de diseño
 
 **Todo el código específico del SO en un solo módulo.** Raíz por defecto,
@@ -240,6 +297,33 @@ lanzarlo, la ruta tiene que ser un nodo que el escaneo produjo, solo `POST` con
 comprobación de `Origin`) y por los endpoints de caché. El resto de endpoints
 siguen siendo de solo lectura.
 
+**Datos regenerables: reglas explícitas, no heurísticas.** Una categoría como
+"no accedido en 6 meses" presentaría una *sospecha* con la misma cara que un
+*hecho* (y `atime` es poco fiable en macOS de todos modos). Cada regla de basura
+es un hecho con nombre y una línea de justificación — "regenerable con `npm
+install`" — de modo que un falso positivo es discutible, no silencioso. `dist`,
+`build` y `target` quedan **deliberadamente fuera**: son basura la mitad de las
+veces y entregable la otra mitad, y una regla que falla el 50% contamina la
+confianza en las demás. `WinSxS` también queda fuera: el almacén de componentes
+de Windows es grande pero no es basura, y tocarlo rompe el sistema.
+
+**La detección de basura va durante el escaneo, no después.** Como el árbol se
+poda a `MAX_CHILDREN` al construirlo (arriba), las carpetas de basura pequeñas y
+numerosas ya están colapsadas en nodos "Otros" y serían invisibles para un
+análisis posterior. Así que la contabilidad viaja con el recorrido: un directorio
+se marca al **entrar** (pre-orden) y se cuenta al **salir** (post-orden, cuando
+ya se conoce su tamaño y antes de que su padre lo pode), con un flag
+`inside_junk` que detiene la detección dentro de un subárbol ya contabilizado
+para que el anidamiento nunca sume dos veces.
+
+**Nunca borra, jamás — y la papelera queda fuera.** La app solo señala; no
+modifica el sistema de archivos. El servidor escucha sin autenticación en
+`127.0.0.1:8765`, el árbol puede venir de una caché de hace días, y un falso
+positivo en un borrado no es un bug, es pérdida de datos. La papelera queda
+excluida en los tres sistemas: en Windows `$Recycle.Bin` ya es una exclusión
+(contarla cambiaría el total del disco), el SO ya la enseña y el usuario ya sabe
+vaciarla — no necesita que la descubra esta herramienta.
+
 ## Rendimiento
 
 Escaneo de referencia de `/System/Volumes/Data` en macOS, un volumen de prueba
@@ -265,7 +349,7 @@ escaner_disco/
 ├── cache.py            # caché en disco (gzip+json) de los árboles escaneados
 ├── static/
 │   ├── index.html
-│   ├── app.js          # sunburst, treemap, lista, breadcrumb, banner, UI de caché
+│   ├── app.js          # sunburst, treemap, pestaña basura, lista, breadcrumb, banner, UI de caché
 │   └── style.css
 ├── docs/               # especificaciones originales por sesión (en español)
 ├── LICENSE
@@ -276,7 +360,7 @@ escaner_disco/
 ## Docs
 
 `docs/` contiene las especificaciones originales por sesión (de `PROMPT-S1.md`
-a `PROMPT-S7.md`), escritas en español. Registran cómo se construyó el proyecto
+a `PROMPT-S10.md`), escritas en español. Registran cómo se construyó el proyecto
 sesión a sesión.
 
 ## Licencia

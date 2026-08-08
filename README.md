@@ -147,6 +147,62 @@ cache file. The two POSTs are `Origin`-checked and POST-only like
 this") and only ever removes `*.json.gz` inside the cache directory, file by
 file — never `shutil.rmtree`.
 
+Bumping to `format_version = 2` (S10, the `junk` key below) invalidates every
+cache written by S5–S9: they lack the field and can't invent it, so they are
+ignored on load with a warning, exactly like a wrong platform or `max_children`.
+A one-time rescan after updating is expected, on Mac and on PC.
+
+## Regenerable data
+
+While scanning, the app flags directories that are **regenerable** — caches,
+build intermediates, downloaded packages — and aggregates them by category in a
+third tab, *Basura*. **The app never deletes anything.** The only action on a
+flagged path is "Reveal in the file manager" (the S4 `POST /api/reveal`); you
+decide what to remove, by hand, in Finder/Explorer.
+
+Detection happens **during** the scan, not after: the tree is pruned to
+`MAX_CHILDREN` at build time, so the many small junk folders are already
+collapsed into "Otros" nodes by the time a post-hoc pass could see them. A
+directory is attributed its **whole** subtree and detection stops inside it, so a
+`node_modules` nested in another `node_modules` is never counted twice. Per
+category the byte total and directory count are exact; the stored path list is
+capped at the 20 largest (`MAX_JUNK_PATHS`), with `truncated: true` when there
+are more.
+
+Rules are **explicit, never heuristic** — every category states, in one line,
+why it is safe to regenerate, so you can disagree with a category on its merits
+instead of trusting a black box:
+
+| Rule (`id`) | Kind | Matches | Why it's regenerable |
+|---|---|---|---|
+| `node_modules` | name | `node_modules` | Regenerable with `npm install` from `package.json` |
+| `__pycache__` | name | `__pycache__` | Bytecode, regenerated on run |
+| `venv` | name | `venv`, `.venv` | Regenerable from `requirements.txt` |
+| `pytest_cache` | name | `.pytest_cache` | Test runner cache |
+| `mypy_cache` | name | `.mypy_cache` | Type checker cache |
+| `ruff_cache` | name | `.ruff_cache` | Linter cache |
+| `derived_data` | name | `DerivedData` | Xcode: indexes and intermediate builds |
+| `user_caches` | path (macOS) | `~/Library/Caches` | Application caches, rebuilt on their own |
+| `system_caches` | path (macOS) | `/Library/Caches` | Same at the system level |
+| `user_logs` | path (macOS) | `~/Library/Logs` | Historical application logs |
+| `ios_device_support` | path (macOS) | `~/Library/Developer/Xcode/iOS DeviceSupport` | Symbols for iOS versions no longer in use |
+| `core_simulator` | path (macOS) | `~/Library/Developer/CoreSimulator` | Downloaded simulator runtimes |
+| `npm_cache` | path (macOS) | `~/.npm/_cacache` | npm package cache |
+| `xdg_cache` | path (macOS/Linux) | `~/.cache` | Unix convention, assorted tools |
+| `docker_data` | path (macOS) | `~/Library/Containers/com.docker.docker/Data` | Docker images and volumes |
+| `user_temp` | path (Windows) | `%LOCALAPPDATA%\Temp` | User temporary files |
+| `system_temp` | path (Windows) | `C:\Windows\Temp` | System temporary files |
+| `windows_update` | path (Windows) | `C:\Windows\SoftwareDistribution\Download` | Installers for already-applied updates |
+| `package_cache` | path (Windows) | `%LOCALAPPDATA%\Package Cache` | Installers kept by Visual Studio |
+| `npm_cache` | path (Windows) | `%LOCALAPPDATA%\npm-cache` | npm package cache |
+| `pip_cache` | path (Windows) | `%LOCALAPPDATA%\pip\Cache` | pip package cache |
+| `apt_archives` | path (Linux) | `/var/cache/apt/archives` | Downloaded `.deb` packages, `apt clean` regenerates |
+
+`name` rules match a directory basename anywhere (case-per-OS); `path` rules
+match one exact absolute path (expanded once per process; a path whose
+environment variable is absent is dropped silently). One `GET /api/junk`
+endpoint serves the summary; it is read-only, 404 when no tree is active.
+
 ## Design decisions
 
 **All OS-specific code in one module.** Default root, quick roots, exclusions,
@@ -234,6 +290,32 @@ launching it, the path must be a node the scan produced, `POST`-only with an
 `Origin` check) and by the cache endpoints. Every other endpoint is still
 read-only.
 
+**Regenerable data: explicit rules, not heuristics.** A category like "not
+accessed in 6 months" would present a *suspicion* with the same face as a *fact*
+(and `atime` is unreliable on macOS anyway). Every junk rule is a named,
+one-line-justified fact — "regenerable with `npm install`" — so a false positive
+is arguable, not silent. `dist`, `build` and `target` are **deliberately absent**:
+they are build junk half the time and a shipped deliverable the other half, and a
+rule that is wrong 50% of the time poisons trust in the rest. `WinSxS` is absent
+too: the Windows component store is large but not junk, and touching it breaks the
+OS.
+
+**Junk detection runs during the scan, not after.** Because the tree is pruned
+to `MAX_CHILDREN` while building (above), the small-but-numerous junk folders are
+already collapsed into "Otros" nodes and would be invisible to a later pass. So
+the accounting rides along with the walk: a directory is marked on the way *in*
+(pre-order) and counted on the way *out* (post-order, when its size is known and
+before its parent prunes it), with an `inside_junk` flag stopping detection
+within an already-counted subtree so nesting never double-counts.
+
+**No delete, ever — and the trash stays out.** The app only flags; it never
+modifies the filesystem. The server listens without authentication on
+`127.0.0.1:8765`, the tree may come from a days-old cache, and a false positive
+in a deletion is not a bug, it's data loss. The recycle bin is excluded on all
+three systems: on Windows `$Recycle.Bin` is already an exclusion (counting it
+would change the disk total), the OS already shows it, and the user already knows
+how to empty it — it doesn't need discovering.
+
 ## Performance
 
 Reference scan of `/System/Volumes/Data` on macOS, a test volume of ~1.2M files
@@ -259,7 +341,7 @@ escaner_disco/
 ├── cache.py            # on-disk gzip+json cache of scanned trees
 ├── static/
 │   ├── index.html
-│   ├── app.js          # sunburst, treemap, list, breadcrumb, error banner, cache UI
+│   ├── app.js          # sunburst, treemap, junk tab, list, breadcrumb, error banner, cache UI
 │   └── style.css
 ├── docs/               # original per-session specs (in Spanish)
 ├── LICENSE
@@ -270,7 +352,7 @@ escaner_disco/
 ## Docs
 
 `docs/` contains the original per-session specifications (`PROMPT-S1.md`
-through `PROMPT-S7.md`), written in Spanish. They record how the project was
+through `PROMPT-S10.md`), written in Spanish. They record how the project was
 built session by session.
 
 ## License
