@@ -15,12 +15,19 @@ needed to scan outside your home folder differ per OS — see the README.
 """
 
 import argparse
+import heapq
 import json
 import os
 import sys
 import time
 
 import platform_support
+
+# Per junk category, keep at most this many of the largest detected paths. The
+# counter (n_paths) stays exact; only the stored list is capped, same idea as
+# MAX_ERROR_PATHS. Without a cap a disk with hundreds of node projects would put
+# hundreds of long paths into RAM and the .json.gz.
+MAX_JUNK_PATHS = 20
 
 # Max direct children kept per directory. The rest are collapsed into a single
 # synthetic "Otros" node AT SCAN TIME and their subtrees are discarded (that is
@@ -48,6 +55,81 @@ class Node:
         self.is_dir = is_dir
         self.children = children  # list for dirs, None for files/leaves
         self.unreadable = unreadable
+
+
+# --- Junk (regenerable folder) detection -----------------------------------
+# Rule lookup tables, built once from the platform catalogue. Names compare
+# case-per-OS (norm); paths compare with normcase on both sides (spec 1.5).
+
+def _build_junk_maps():
+    name_map, path_map = {}, {}
+    for rule in platform_support.junk_rules():
+        if rule["kind"] == "name":
+            m = rule["match"]
+            for n in (m if isinstance(m, tuple) else (m,)):
+                name_map[platform_support.norm(n)] = rule
+        else:
+            path_map[os.path.normcase(rule["match"])] = rule
+    return name_map, path_map
+
+
+_JUNK_NAME_MAP, _JUNK_PATH_MAP = _build_junk_maps()
+
+
+def _match_junk(name, path):
+    """Return the rule a directory matches, or None. Cheap: two dict lookups."""
+    rule = _JUNK_NAME_MAP.get(platform_support.norm(name))
+    if rule is not None:
+        return rule
+    return _JUNK_PATH_MAP.get(os.path.normcase(path))
+
+
+class JunkCollector:
+    """Accumulates per-category size/count of detected junk directories.
+
+    A directory is recorded once, on close, with its whole subtree size. The
+    counter is exact; the stored path list is capped at MAX_JUNK_PATHS (largest
+    kept via a min-heap, so pushing past the cap is O(1) amortised).
+    """
+    __slots__ = ("_cats",)
+
+    def __init__(self):
+        self._cats = {}  # rule_id -> {"rule", "total_size", "n_paths", "heap"}
+
+    def record(self, rule, path, size, n_files):
+        c = self._cats.get(rule["id"])
+        if c is None:
+            c = self._cats[rule["id"]] = {
+                "rule": rule, "total_size": 0, "n_paths": 0, "heap": [],
+            }
+        c["total_size"] += size
+        c["n_paths"] += 1
+        item = (size, path, n_files)
+        heap = c["heap"]
+        if len(heap) < MAX_JUNK_PATHS:
+            heapq.heappush(heap, item)
+        else:
+            heapq.heappushpop(heap, item)  # drops the current smallest
+
+    def result(self):
+        """Serialisable summary. Categories with no detection never appear."""
+        cats = []
+        for c in self._cats.values():
+            rule = c["rule"]
+            paths = sorted(c["heap"], key=lambda t: t[0], reverse=True)
+            cats.append({
+                "id": rule["id"],
+                "label": rule["label"],
+                "why": rule["why"],
+                "total_size": c["total_size"],
+                "n_paths": c["n_paths"],
+                "truncated": c["n_paths"] > MAX_JUNK_PATHS,
+                "paths": [{"path": p, "size": s, "n_files": nf}
+                          for (s, p, nf) in paths],
+            })
+        cats.sort(key=lambda x: x["total_size"], reverse=True)
+        return {"categories": cats,
+                "total_size": sum(x["total_size"] for x in cats)}
 
 
 def human(size):
@@ -123,6 +205,7 @@ def scan(root, excludes=None, callback=None):
 
     stats = {"files": 0, "errors": 0, "seconds": 0.0, "error_paths": []}
     seen_inodes = set()  # (st_dev, st_ino) for hardlink dedup
+    junk = JunkCollector()
     started = time.time()
 
     def record_error(path):
@@ -137,15 +220,19 @@ def scan(root, excludes=None, callback=None):
 
     root_node = Node(os.path.basename(root) or root, 0, 0, True, [])
 
-    # Frame: [node, entries, idx, dirpath]. entries is None until listed.
-    # dirpath is kept only to feed os.scandir and the exclude/volume checks;
-    # it is never stored on the Node. On Windows the walk root carries the
-    # \\?\ long-path prefix (stripped from anything shown to the client).
-    stack = [[root_node, None, 0, platform_support.extended_path(root)]]
+    # Frame: [node, entries, idx, dirpath, inside_junk, rule, jpath]. entries is
+    # None until listed. dirpath feeds os.scandir and the exclude/volume checks
+    # and is never stored on the Node. The last three carry junk accounting:
+    # inside_junk is True once we are within a detected subtree (so we stop
+    # evaluating rules), rule/jpath name the category this exact directory is,
+    # and are non-None only on the subtree's top directory. On Windows the walk
+    # root carries the \\?\ long-path prefix (stripped from client-facing paths).
+    stack = [[root_node, None, 0, platform_support.extended_path(root),
+              False, None, None]]
 
     while stack:
         frame = stack[-1]
-        node, entries, idx, dpath = frame
+        node, entries, idx, dpath = frame[:4]
 
         if entries is None:
             try:
@@ -165,6 +252,10 @@ def scan(root, excludes=None, callback=None):
 
         if idx >= len(entries):
             _finalize(node)
+            # Post-order: size/count are accumulated now, so record this dir in
+            # its category (only the subtree's top dir has a non-None rule).
+            if frame[5] is not None:
+                junk.record(frame[5], frame[6], node.size, node.n_files)
             stack.pop()
             continue
 
@@ -197,7 +288,16 @@ def scan(root, excludes=None, callback=None):
                 continue  # do not cross volumes
             child = Node(entry.name, 0, 0, True, [])
             node.children.append(child)
-            stack.append([child, None, 0, entry.path])
+            # Pre-order junk marking. Inside a detected subtree we inherit the
+            # flag and stop evaluating, so nested junk (a node_modules within a
+            # node_modules) is never counted twice. Otherwise test the rules.
+            if frame[4]:  # parent already inside junk
+                stack.append([child, None, 0, entry.path, True, None, None])
+            else:
+                rule = _match_junk(entry.name, clean)
+                stack.append([child, None, 0, entry.path,
+                              rule is not None, rule,
+                              clean if rule is not None else None])
             continue
 
         # Files can also be excluded (Windows pagefile.sys, hiberfil.sys, ...).
@@ -217,6 +317,7 @@ def scan(root, excludes=None, callback=None):
 
     _warn_if_no_descent(root, root_node)
     stats["seconds"] = time.time() - started
+    stats["junk"] = junk.result()
     return root_node, stats
 
 
@@ -279,6 +380,22 @@ def _print_summary(root_path, node, stats):
             print(f"  {path}")
         if stats["errors"] > 10:
             print(f"  ... y {stats['errors'] - 10} más")
+
+    _print_junk(stats.get("junk"))
+
+
+def _print_junk(junk):
+    """Compact regenerable-data section, sorted by size desc. Silent if empty."""
+    if not junk or not junk["categories"]:
+        return
+    cats = junk["categories"]
+    n = len(cats)
+    print(f"\nRegenerable data: {human(junk['total_size'])} in {n} "
+          f"{'category' if n == 1 else 'categories'}")
+    for c in cats:
+        d = c["n_paths"]
+        print(f"  {c['label']:<22} {human(c['total_size']):>8} "
+              f"{d:>5} {'dir' if d == 1 else 'dirs'}")
 
 
 def main():
