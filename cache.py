@@ -20,7 +20,10 @@ import sys
 import platform_support
 import scanner
 
-FORMAT_VERSION = 1
+# Bumped to 2 in S10: the "junk" (regenerable data) key was added. S5-S9 caches
+# lack it and can't invent it, so they are ignored with a warning (like a wrong
+# platform or max_children). Consequence: a mandatory rescan after updating.
+FORMAT_VERSION = 2
 _TREE_MARKER = ',"tree":'  # top-level "tree" key is written LAST (see _write)
 
 
@@ -124,6 +127,7 @@ def save(root_path, tree, meta):
             "errors": meta["errors"],
             "error_paths": meta["error_paths"],
             "max_children": scanner.MAX_CHILDREN,
+            "junk": meta.get("junk", {"categories": [], "total_size": 0}),
         }
         # Emit the head object without its closing brace, then ,"tree":<tree>}.
         head_json = json.dumps(head, ensure_ascii=False)
@@ -197,6 +201,7 @@ def load(root_path):
         "n_files": obj.get("n_files", tree.n_files),
         "errors": obj.get("errors", 0),
         "error_paths": obj.get("error_paths", []),
+        "junk": obj.get("junk", {"categories": [], "total_size": 0}),
     }
     return tree, meta
 

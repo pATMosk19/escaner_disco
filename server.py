@@ -42,10 +42,11 @@ _tree = None          # root Node of the last completed scan
 _root_path = ""       # absolute path of that root
 _error_paths = []     # capped list of unreadable paths from the last scan
 _error_total = 0      # total unreadable paths (may exceed the capped list)
+_junk = None          # regenerable-data summary for the active tree (or None)
 
 
 def _run_scan(path):
-    global _tree, _root_path, _error_paths, _error_total
+    global _tree, _root_path, _error_paths, _error_total, _junk
     started = time.time()
 
     def progress(files_seen, current_path):
@@ -62,6 +63,7 @@ def _run_scan(path):
             _root_path = os.path.abspath(path)
             _error_paths = stats["error_paths"]
             _error_total = stats["errors"]
+            _junk = stats["junk"]
             _state.update({
                 "state": "done",
                 "source": "scan",
@@ -80,6 +82,7 @@ def _run_scan(path):
                 "elapsed": stats["seconds"],
                 "errors": stats["errors"],
                 "error_paths": stats["error_paths"],
+                "junk": stats["junk"],
             })
         except OSError as exc:
             print(f"cache: save failed: {exc}", file=sys.stderr)
@@ -90,12 +93,13 @@ def _run_scan(path):
 
 def _activate_cache(tree, meta):
     """Install a cache-loaded tree as the active tree."""
-    global _tree, _root_path, _error_paths, _error_total
+    global _tree, _root_path, _error_paths, _error_total, _junk
     with _lock:
         _tree = tree
         _root_path = meta["root_path"]
         _error_paths = meta["error_paths"]
         _error_total = meta["errors"]
+        _junk = meta.get("junk", {"categories": [], "total_size": 0})
         _state.update({
             "state": "done",
             "source": "cache",
@@ -175,6 +179,15 @@ class Handler(BaseHTTPRequestHandler):
                     "truncated": _error_total > scanner.MAX_ERROR_PATHS,
                     "paths": list(_error_paths),
                 })
+            return
+        if parsed.path == "/api/junk":
+            # Regenerable-data summary for the active tree. Read-only, no side
+            # effects. 404 when there is no tree to describe.
+            with _lock:
+                if _tree is None:
+                    self._send_json({"error": "not found"}, status=404)
+                else:
+                    self._send_json(_junk or {"categories": [], "total_size": 0})
             return
         if parsed.path == "/api/cache":
             self._send_json({
