@@ -273,6 +273,116 @@ def strip_extended(path):
     return path[4:] if path.startswith("\\\\?\\") else path
 
 
+# --- Regenerable ("junk") folder catalogue (S10) ---------------------------
+# Rules the scanner uses to flag folders that can be regenerated on demand. The
+# app only ever *flags* these — it never deletes. See README "Regenerable data".
+#
+# A rule is a dict: {id, label, kind, match, why}.
+#   id    stable key (cache/API); changing it invalidates caches that used it.
+#   label text shown in the UI / CLI.
+#   kind  "name" (a directory basename anywhere) or "path" (one exact abs path).
+#   match for "name", a basename or a tuple of basenames; for "path", the
+#         already-expanded absolute path.
+#   why   one-line justification, in English (goes to the README and the UI).
+#
+# Deliberately NOT here: dist, build, target. They are build junk half the time
+# and a shipped deliverable the other half; a rule that is wrong 50% of the time
+# poisons trust in the rest. Do NOT add them "for completeness".
+
+_JUNK_NAME_RULES = (
+    # (id, match, why). match is a tuple only where a dir has two spellings.
+    ("node_modules", "node_modules",
+     "Regenerable with npm install from package.json"),
+    ("__pycache__", "__pycache__", "Bytecode, regenerated on run"),
+    ("venv", ("venv", ".venv"), "Regenerable from requirements.txt"),
+    ("pytest_cache", ".pytest_cache", "Test runner cache"),
+    ("mypy_cache", ".mypy_cache", "Type checker cache"),
+    ("ruff_cache", ".ruff_cache", "Linter cache"),
+    ("derived_data", "DerivedData", "Xcode: indexes and intermediate builds"),
+)
+
+
+def _junk_path_rules_raw():
+    """(id, raw_path, why) for the current OS; raw_path not yet expanded.
+
+    The label shown to the user is the raw (unexpanded) form, so "~/Library/
+    Caches" stays readable instead of leaking the home directory.
+    """
+    pid = platform_id()
+    if pid == "macos":
+        return (
+            ("user_caches", "~/Library/Caches",
+             "Application caches, rebuilt on their own"),
+            ("system_caches", "/Library/Caches", "Same at the system level"),
+            ("user_logs", "~/Library/Logs", "Historical application logs"),
+            ("ios_device_support", "~/Library/Developer/Xcode/iOS DeviceSupport",
+             "Symbols for iOS versions no longer in use"),
+            ("core_simulator", "~/Library/Developer/CoreSimulator",
+             "Downloaded simulator runtimes"),
+            ("npm_cache", "~/.npm/_cacache", "npm package cache"),
+            ("xdg_cache", "~/.cache", "Unix convention, assorted tools"),
+            ("docker_data", "~/Library/Containers/com.docker.docker/Data",
+             "Docker images and volumes"),
+        )
+    if pid == "windows":
+        # WinSxS is deliberately absent: it is the Windows component store —
+        # large (18 GB on the reference PC) but not junk, and touching it
+        # breaks the OS.
+        return (
+            ("user_temp", r"%LOCALAPPDATA%\Temp", "User temporary files"),
+            ("system_temp", r"C:\Windows\Temp", "System temporary files"),
+            ("windows_update", r"C:\Windows\SoftwareDistribution\Download",
+             "Installers for already-applied updates"),
+            ("package_cache", r"%LOCALAPPDATA%\Package Cache",
+             "Installers kept by Visual Studio"),
+            ("npm_cache", r"%LOCALAPPDATA%\npm-cache", "npm package cache"),
+            ("pip_cache", r"%LOCALAPPDATA%\pip\Cache", "pip package cache"),
+        )
+    # Linux. The trash (~/.local/share/Trash) is deliberately NOT here: the
+    # recycle bin is excluded on every OS (see README design decisions).
+    return (
+        ("xdg_cache", "~/.cache", "Unix convention, assorted tools"),
+        ("apt_archives", "/var/cache/apt/archives",
+         "Downloaded .deb packages, apt clean regenerates"),
+    )
+
+
+def _expand_junk_path(raw):
+    """Expand ~ and %VARS%; return None if a variable can't be resolved.
+
+    A missing environment variable leaves a literal "%VAR%" behind: rather than
+    match a bogus path, drop the rule silently (per the S10 spec).
+    """
+    p = os.path.expandvars(os.path.expanduser(raw))
+    return None if "%" in p else p
+
+
+_JUNK_RULES = None  # built once per process by junk_rules()
+
+
+def junk_rules():
+    """Immutable tuple of junk rules for this OS, computed once per process.
+
+    Path rules are expanded here (never in the scanner); one that can't be
+    expanded on this host is omitted.
+    """
+    global _JUNK_RULES
+    if _JUNK_RULES is not None:
+        return _JUNK_RULES
+    rules = []
+    for rid, match, why in _JUNK_NAME_RULES:
+        rules.append({"id": rid, "label": rid, "kind": "name",
+                      "match": match, "why": why})
+    for rid, raw, why in _junk_path_rules_raw():
+        expanded = _expand_junk_path(raw)
+        if expanded is None:
+            continue  # variable absent on this host; skip quietly
+        rules.append({"id": rid, "label": raw, "kind": "path",
+                      "match": expanded, "why": why})
+    _JUNK_RULES = tuple(rules)
+    return _JUNK_RULES
+
+
 if __name__ == "__main__":
     # Smoke check: the public API returns sane values on this host.
     print("platform_id     :", platform_id())
@@ -282,3 +392,6 @@ if __name__ == "__main__":
     print("cache_dir       :", cache_dir())
     print("reveal_command  :", reveal_command(os.path.expanduser("~/x.txt")))
     print("WINDOWS_EXACT_SIZE:", WINDOWS_EXACT_SIZE)
+    print("junk_rules      :", len(junk_rules()), "rules")
+    for r in junk_rules():
+        print("   ", r["kind"], r["id"], "->", r["match"])
