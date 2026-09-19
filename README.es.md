@@ -208,6 +208,40 @@ exacta (expandida una vez por proceso; una ruta cuya variable de entorno falte s
 descarta en silencio). Un único endpoint `GET /api/junk` sirve el resumen; es de
 solo lectura y devuelve 404 si no hay árbol activo.
 
+## App empaquetada (macOS)
+
+La app se puede empaquetar como `.app` de doble clic con PyInstaller (ver
+[packaging/README.md](packaging/README.md)):
+
+```bash
+python3 -m venv ~/.venvs/escaner-disco-build && source ~/.venvs/escaner-disco-build/bin/activate
+pip install pyinstaller
+./packaging/build_macos.sh        # -> dist/Escáner de Disco.app
+```
+
+El `.app` **no está firmado ni notarizado** (solo firma ad-hoc), así que la
+primera vez en otro Mac hay que abrirlo con clic derecho → Abrir. Al hacer doble
+clic arranca el servidor en el primer puerto libre entre 8765 y 8775 y abre el
+navegador en `http://127.0.0.1:<puerto>/` (nunca `localhost`: la comprobación de
+`Origin` solo acepta el origen exacto). Para cerrarla, usa el botón **Salir**
+(arriba a la derecha; solo aparece empaquetada): no hay ventana ni ítem en la
+barra de menús.
+
+**Acceso total al disco (TCC): la app necesita su propia entrada.** El `.app` es
+un proceso distinto de Terminal y **no hereda** su permiso. Concédelo en Ajustes
+del Sistema → Privacidad y seguridad → Acceso total al disco → `+` →
+`Escáner de Disco.app`, y después **cierra la app por completo y vuelve a
+abrirla**: el permiso se aplica al arrancar el proceso. Sin él, un escaneo da
+cientos de rutas no legibles y un total varios GB corto. La pantalla de inicio lo
+detecta y muestra los pasos *antes* de escanear (nunca bloquea el escaneo); el
+mismo aviso sale al ejecutar `server.py` desde un Terminal sin el permiso.
+
+Log (stdout/stderr, se trunca en cada arranque):
+`~/Library/Logs/escaner_disco/app.log`. La caché sigue en
+`~/Library/Application Support/escaner_disco`, fuera del bundle.
+`POST /api/quit` cierra el servidor y el proceso (solo POST, con comprobación de
+`Origin`, sin parámetros).
+
 ## Decisiones de diseño
 
 **Todo el código específico del SO en un solo módulo.** Raíz por defecto,
@@ -294,8 +328,26 @@ nada tuyo" son promesas distintas, y la segunda es la que podemos cumplir.
 del cliente. Segunda: ningún endpoint tiene efectos laterales — rota a propósito
 por `POST /api/reveal` (revela el elemento en el gestor de archivos del SO sin
 lanzarlo, la ruta tiene que ser un nodo que el escaneo produjo, solo `POST` con
-comprobación de `Origin`) y por los endpoints de caché. El resto de endpoints
-siguen siendo de solo lectura.
+comprobación de `Origin`) y por los endpoints de caché. Desde S11 la app también puede
+**terminarse a sí misma** (`POST /api/quit`, mismo blindaje que reveal); matar su
+propio proceso no toca el sistema de archivos, así que la primera promesa se
+mantiene. El resto de endpoints siguen siendo de solo lectura.
+
+**PyInstaller `--onedir` dentro de un `.app`, no `--onefile`.** `--onefile`
+descomprime a una ruta temporal distinta en cada arranque, y TCC concede el
+Acceso total al disco a una ruta concreta, así que el permiso nunca se
+mantendría. `--onedir` tiene ruta estable y arranca al instante.
+
+**PyInstaller es dependencia de build, no de ejecución.** Quien clone el repo
+sigue ejecutando `python3 server.py` sin instalar nada; la regla de "cero
+dependencias" se mantiene para el código que corre. El empaquetado vive aparte,
+en `packaging/`, y ningún módulo de ejecución importa nada de terceros.
+
+**`/api/quit` en vez de un ítem en la barra de menús.** Sin ventana propia, la
+app se quedaría corriendo invisible hasta un `pkill`. Un ítem de menú exigiría
+`pyobjc` o `rumps`, dependencias que sí se ejecutan; por eso, botón **Salir** en
+el navegador (con confirmación en la página, solo empaquetada) y un endpoint
+blindado.
 
 **Datos regenerables: reglas explícitas, no heurísticas.** Una categoría como
 "no accedido en 6 meses" presentaría una *sospecha* con la misma cara que un
@@ -347,6 +399,8 @@ escaner_disco/
 ├── platform_support.py # todo lo específico del SO (macOS/Windows/Linux)
 ├── server.py           # servidor HTTP local, solo 127.0.0.1
 ├── cache.py            # caché en disco (gzip+json) de los árboles escaneados
+├── app_main.py         # punto de entrada del .app (puerto, log, navegador)
+├── packaging/          # spec de PyInstaller + script de build (solo build)
 ├── static/
 │   ├── index.html
 │   ├── app.js          # sunburst, treemap, pestaña basura, lista, breadcrumb, banner, UI de caché
@@ -360,7 +414,7 @@ escaner_disco/
 ## Docs
 
 `docs/` contiene las especificaciones originales por sesión (de `PROMPT-S1.md`
-a `PROMPT-S10.md`), escritas en español. Registran cómo se construyó el proyecto
+a `PROMPT-S11.md`), escritas en español. Registran cómo se construyó el proyecto
 sesión a sesión.
 
 ## Licencia

@@ -203,6 +203,38 @@ match one exact absolute path (expanded once per process; a path whose
 environment variable is absent is dropped silently). One `GET /api/junk`
 endpoint serves the summary; it is read-only, 404 when no tree is active.
 
+## Packaged app (macOS)
+
+The app can be packaged as a double-clickable `.app` with PyInstaller (see
+[packaging/README.md](packaging/README.md)):
+
+```bash
+python3 -m venv ~/.venvs/escaner-disco-build && source ~/.venvs/escaner-disco-build/bin/activate
+pip install pyinstaller
+./packaging/build_macos.sh        # -> dist/Escáner de Disco.app
+```
+
+The `.app` is **not signed or notarized** (only ad-hoc signed), so the first time
+on another Mac open it with right-click → Open. Double-clicking it starts the
+server on the first free port in 8765–8775 and opens your browser on
+`http://127.0.0.1:<port>/` (never `localhost`: the `Origin` check only accepts
+the exact origin). Use the **Salir** button (top right; only shown when
+packaged) to quit — there is no window or menu-bar item.
+
+**Full Disk Access (TCC) — the app needs its own entry.** The `.app` is a
+different process from Terminal and does **not** inherit Terminal's permission.
+Grant it in System Settings → Privacy & Security → Full Disk Access → `+` →
+`Escáner de Disco.app`, then **quit the app completely and reopen it**: the
+permission applies when the process starts. Without it a scan reports hundreds
+of unreadable paths and a total several GB short. The start screen detects this
+and shows the steps *before* you scan (it never blocks scanning); the same
+warning appears when running `server.py` from a Terminal without the permission.
+
+Logs (stdout/stderr, truncated on each start): `~/Library/Logs/escaner_disco/app.log`.
+The cache still lives in `~/Library/Application Support/escaner_disco`, outside
+the bundle. `POST /api/quit` closes the server and the process (POST-only,
+`Origin`-checked, takes no parameters).
+
 ## Design decisions
 
 **All OS-specific code in one module.** Default root, quick roots, exclusions,
@@ -287,8 +319,25 @@ keep. `/api/cache/clear` only ever deletes the app's `*.json.gz`, and never
 accepts a path from the client. Second: no endpoint has side effects — broken on
 purpose by `POST /api/reveal` (reveals the item in the OS file manager without
 launching it, the path must be a node the scan produced, `POST`-only with an
-`Origin` check) and by the cache endpoints. Every other endpoint is still
-read-only.
+`Origin` check) and by the cache endpoints. Since S11 the app can also **terminate itself**
+(`POST /api/quit`, same shielding as reveal); killing its own process does not
+touch the filesystem, so the first promise still holds. Every other endpoint is
+still read-only.
+
+**PyInstaller `--onedir` inside a `.app`, not `--onefile`.** `--onefile` unpacks
+to a different temporary path on every launch, and TCC grants Full Disk Access to
+a specific path, so the permission would never stick. `--onedir` has a stable
+path and starts instantly.
+
+**PyInstaller is a build dependency, not a runtime one.** Whoever clones the repo
+still runs `python3 server.py` with nothing installed; the "zero dependencies"
+rule holds for the code that runs. Packaging lives apart in `packaging/`, and no
+runtime module imports anything third-party.
+
+**`/api/quit` instead of a menu-bar item.** A windowless app would otherwise
+keep running invisibly until a `pkill`. A menu-bar item would need `pyobjc` or
+`rumps`, dependencies that *do* run, so the browser's own **Salir** button
+(confirmed in the page, packaged only) plus a hardened endpoint it is.
 
 **Regenerable data: explicit rules, not heuristics.** A category like "not
 accessed in 6 months" would present a *suspicion* with the same face as a *fact*
@@ -339,6 +388,8 @@ escaner_disco/
 ├── platform_support.py # all OS-specific behaviour (macOS/Windows/Linux)
 ├── server.py           # local HTTP server, 127.0.0.1 only
 ├── cache.py            # on-disk gzip+json cache of scanned trees
+├── app_main.py         # entry point of the packaged .app (port, log, browser)
+├── packaging/          # PyInstaller spec + build script (build-time only)
 ├── static/
 │   ├── index.html
 │   ├── app.js          # sunburst, treemap, junk tab, list, breadcrumb, error banner, cache UI
@@ -352,7 +403,7 @@ escaner_disco/
 ## Docs
 
 `docs/` contains the original per-session specifications (`PROMPT-S1.md`
-through `PROMPT-S10.md`), written in Spanish. They record how the project was
+through `PROMPT-S11.md`), written in Spanish. They record how the project was
 built session by session.
 
 ## License
