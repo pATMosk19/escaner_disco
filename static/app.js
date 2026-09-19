@@ -25,6 +25,7 @@ const state = {
   platform: "",   // "macos" | "windows" | "linux"
   sep: "/",       // path separator for this platform
   view: loadView(), // "sunburst" | "treemap" — remembered across sessions
+  packaged: false, // true when running from the PyInstaller .app (S11)
 };
 
 // Path separator per platform. Windows paths from the server use backslashes.
@@ -1037,6 +1038,86 @@ document.getElementById("rescan-btn").addEventListener("click", () => {
   loadSavedScans();  // a fresh scan may have added a cache entry
 });
 
+// --- Full Disk Access warning (start screen, before any scan) ---
+// Shown whenever the process can't read TCC-protected paths — packaged or
+// not (running server.py from Terminal without Full Disk Access hits the
+// exact same wall). Informs, never blocks: scanning a folder that doesn't
+// need the permission (e.g. the user's own home) still works fine.
+function renderTccWarning(hasAccess) {
+  const el = document.getElementById("tcc-warning");
+  if (hasAccess) { el.classList.add("hidden"); el.textContent = ""; return; }
+  el.classList.remove("hidden");
+  const restart = state.packaged
+    ? "Cierra la app por completo (botón <b>Salir</b>) y vuelve a abrirla: el " +
+      "permiso se aplica al arrancar el proceso, no en caliente."
+    : "Cierra el servidor (<code>Ctrl-C</code>) y vuelve a ejecutar " +
+      "<code>python3 server.py</code>: el permiso se aplica al arrancar el " +
+      "proceso, no en caliente.";
+  const steps = state.packaged
+    ? "Ajustes del Sistema → Privacidad y seguridad → Acceso total al disco → " +
+      "botón <b>+</b> → selecciona <b>Escáner de Disco.app</b>."
+    : "Ajustes del Sistema → Privacidad y seguridad → Acceso total al disco → " +
+      "botón <b>+</b> → selecciona <b>Terminal</b> (o la app desde la que " +
+      "lanzas <code>python3 server.py</code>).";
+  el.innerHTML =
+    "<p><b>Sin Acceso total al disco:</b> el escaneo puede terminar con el " +
+    "total por debajo del real y cientos de carpetas marcadas como no " +
+    "legibles.</p>" +
+    `<p>Para concederlo: ${steps}</p>` +
+    `<p>${restart}</p>` +
+    "<p>Puedes escanear igualmente carpetas que no necesiten el permiso " +
+    "(por ejemplo tu carpeta personal).</p>";
+}
+
+// --- Quit (packaged only) ---
+// Confirmation lives in the page itself, never the browser's confirm(): the
+// button only shows when packaged (S11 decision 6 — no menu-bar item, this
+// is the only way to leave a windowless app cleanly).
+function showQuitConfirm() {
+  document.getElementById("quit-btn").classList.add("hidden");
+  const box = document.getElementById("quit-confirm");
+  box.innerHTML =
+    `<div class="confirm">` +
+    `<p>Se cerrará la aplicación y esta pestaña dejará de funcionar.</p>` +
+    `<div class="confirm-actions"></div>` +
+    `</div>`;
+  const actions = box.querySelector(".confirm-actions");
+  const cancel = document.createElement("button");
+  cancel.type = "button";
+  cancel.className = "link-btn";
+  cancel.textContent = "Cancelar";
+  cancel.addEventListener("click", hideQuitConfirm);
+  const confirm = document.createElement("button");
+  confirm.type = "button";
+  confirm.className = "link-btn danger";
+  confirm.textContent = "Salir";
+  confirm.addEventListener("click", doQuit);
+  actions.append(cancel, confirm);
+  box.classList.remove("hidden");
+  cancel.focus();  // cancel is the default
+}
+
+function hideQuitConfirm() {
+  const box = document.getElementById("quit-confirm");
+  box.classList.add("hidden");
+  box.innerHTML = "";
+  document.getElementById("quit-btn").classList.remove("hidden");
+}
+
+async function doQuit() {
+  try {
+    await fetch("/api/quit", { method: "POST" });
+  } catch (e) {
+    // The server may tear the connection down before the fetch resolves;
+    // either way we're quitting, so there is nothing left to recover.
+  }
+  document.body.innerHTML =
+    '<div id="quit-done"><h1>Escáner de disco se ha cerrado</h1>' +
+    '<p>Puedes cerrar esta pestaña.</p></div>';
+}
+
+document.getElementById("quit-btn").addEventListener("click", showQuitConfirm);
+
 // Fill the default scan path and the per-OS quick-root shortcuts from the
 // server. Also sets the platform up front so the start screen is correct even
 // before any scan runs.
@@ -1049,8 +1130,12 @@ async function loadConfig() {
   }
   state.platform = cfg.platform || "";
   state.sep = sepFor(state.platform);
+  state.packaged = !!cfg.packaged;
   const input = document.getElementById("path-input");
   if (!input.value) input.value = cfg.default_root || "";
+
+  document.getElementById("quit-btn").classList.toggle("hidden", !state.packaged);
+  renderTccWarning(cfg.full_disk_access);
 
   const box = document.querySelector(".shortcuts");
   box.textContent = "";

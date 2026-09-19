@@ -17,6 +17,9 @@
     </div>
     <!-- Shortcuts are filled from /api/config (per-OS quick roots). -->
     <div class="shortcuts"></div>
+    <!-- Full Disk Access warning, filled from /api/config; shown before any
+         scan whenever the process can't read TCC-protected paths. -->
+    <div id="tcc-warning" class="hidden"></div>
     <p id="progress" class="hidden"></p>
     <p id="error" class="hidden"></p>
 
@@ -32,8 +35,15 @@
     <nav id="breadcrumb"></nav>
     <div id="freshness" class="hidden"></div>
     <div id="error-banner" class="hidden"></div>
-    <!-- Sunburst | Treemap switch. Buttons are built in app.js. -->
-    <div id="view-tabs" role="group" aria-label="Vista del gráfico"></div>
+    <div id="view-bar">
+      <!-- Sunburst | Treemap switch. Buttons are built in app.js. -->
+      <div id="view-tabs" role="group" aria-label="Vista del gráfico"></div>
+      <!-- Only shown when running packaged (see /api/config "packaged"). -->
+      <div id="quit-area">
+        <button id="quit-btn" type="button" class="hidden">Salir</button>
+        <div id="quit-confirm" class="hidden"></div>
+      </div>
+    </div>
     <div class="panels">
       <!-- The active chart (sunburst or treemap) is mounted here by app.js;
            the inactive one is removed from the DOM, not just hidden. -->
