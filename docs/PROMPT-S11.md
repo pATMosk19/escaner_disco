@@ -245,7 +245,7 @@ Este mismo fichero.
    aviso con los pasos **antes** de escanear, y el escaneo sigue siendo posible.
 9. `/api/reveal` sigue abriendo Finder desde la app empaquetada.
 10. Un fallo al arrancar deja rastro en `~/Library/Logs/escaner_disco/app.log`.
-11. `git ls-files -z | xargs -0 grep -ln "enri_ps"` vacío.
+11. `git ls-files -z | xargs -0 grep -ln "TU_USUARIO"` vacío.
 12. Ni `dist/`, ni `build/`, ni el venv de build aparecen en `git ls-files`.
 
 ### Comprobación manual
