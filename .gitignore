@@ -8,3 +8,8 @@ __pycache__/
 
 # Session continuation notes are kept out of the public repo.
 escaner_disco-continuacion-*.md
+
+# PyInstaller output (packaging/) and a build venv, if kept inside the repo.
+/build/
+/dist/
+.venv-build/
