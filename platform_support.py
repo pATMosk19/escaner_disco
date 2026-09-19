@@ -153,6 +153,49 @@ def excluded_here(path, root):
     return False
 
 
+# --- Packaging (PyInstaller) ------------------------------------------------
+
+def is_packaged():
+    """True when running from a PyInstaller-frozen bundle (the .app)."""
+    return getattr(sys, "frozen", False)
+
+
+def resource_dir():
+    """Base directory for bundled read-only resources (e.g. static/).
+
+    PyInstaller unpacks data files under sys._MEIPASS at startup; unpackaged,
+    it's just this module's own directory (the project root, where static/
+    already lives next to server.py).
+    """
+    if is_packaged():
+        return sys._MEIPASS
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+# --- Full Disk Access (macOS TCC) -------------------------------------------
+
+def has_full_disk_access():
+    """True if this process can read TCC-protected paths.
+
+    Probes a directory that is only listable with Full Disk Access granted to
+    the launching process. Broad except: this check must never crash the
+    app, so anything other than a clear permission denial is treated as
+    "access granted" rather than risking a false alarm.
+
+    Windows and Linux have no equivalent gate; return True unconditionally.
+    """
+    if platform_id() != "macos":
+        return True
+    try:
+        os.listdir(os.path.expanduser(
+            "~/Library/Application Support/com.apple.TCC/"))
+        return True
+    except PermissionError:
+        return False
+    except Exception:
+        return True
+
+
 # --- Cross-volume check ----------------------------------------------------
 
 def same_volume(root_path, root_st, child_path, child_st):
@@ -392,6 +435,9 @@ if __name__ == "__main__":
     print("cache_dir       :", cache_dir())
     print("reveal_command  :", reveal_command(os.path.expanduser("~/x.txt")))
     print("WINDOWS_EXACT_SIZE:", WINDOWS_EXACT_SIZE)
+    print("is_packaged     :", is_packaged())
+    print("resource_dir    :", resource_dir())
+    print("has_full_disk_access:", has_full_disk_access())
     print("junk_rules      :", len(junk_rules()), "rules")
     for r in junk_rules():
         print("   ", r["kind"], r["id"], "->", r["match"])

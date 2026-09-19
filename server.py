@@ -20,7 +20,7 @@ import cache
 import platform_support
 import scanner
 
-STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+STATIC_DIR = os.path.join(platform_support.resource_dir(), "static")
 MAX_DEPTH = 5
 
 # Shared scan state, guarded by _lock.
@@ -202,11 +202,14 @@ class Handler(BaseHTTPRequestHandler):
                 "platform": platform_support.platform_id(),
                 "default_root": platform_support.default_scan_root(),
                 "quick_roots": platform_support.quick_roots(),
+                "packaged": platform_support.is_packaged(),
+                "full_disk_access": platform_support.has_full_disk_access(),
             })
             return
         # These have side effects and are POST-only; a GET is reachable from a
         # bare <img>/<link> tag, so refuse it here with 405.
-        if parsed.path in ("/api/reveal", "/api/cache/load", "/api/cache/clear"):
+        if parsed.path in ("/api/reveal", "/api/cache/load", "/api/cache/clear",
+                           "/api/quit"):
             self._send_json({"ok": False, "error": "method not allowed"},
                             status=405)
             return
@@ -244,6 +247,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/cache/clear":
             self._handle_cache_clear()
+            return
+        if parsed.path == "/api/quit":
+            self._handle_quit()
             return
         self.send_error(404)
 
@@ -362,15 +368,53 @@ class Handler(BaseHTTPRequestHandler):
             return
         self._send_json({"ok": True})
 
+    def _handle_quit(self):
+        # Terminates the whole process, so it earns the same bar as /api/reveal:
+        #
+        #  1. POST-only is enforced in do_GET (405): a GET is reachable from a
+        #     bare <img>/<link> tag with no script and no user gesture.
+        #  2. Origin: a present, foreign Origin is a cross-site request -> 403.
+        #     A missing Origin is allowed (same-origin fetch doesn't always send
+        #     one).
+        #  3. No parameters accepted: the body is drained and ignored. The
+        #     client says "close", not "close this" — there is nothing to
+        #     scope the request to.
+        length = int(self.headers.get("Content-Length", 0))
+        self.rfile.read(length) if length else b""  # drain, unused
+
+        if self._bad_origin():
+            self._send_json({"ok": False, "error": "forbidden origin"},
+                            status=403)
+            return
+
+        self._send_json({"ok": True})
+        # Respond FIRST, close SECOND: shutdown() from this handler's own
+        # thread would block (it waits for the serve loop, which can't notice
+        # the flag while this request is still being handled), so it runs in
+        # a separate thread after the response is already on the wire.
+        threading.Thread(target=_terminate, args=(self.server,),
+                         daemon=True).start()
+
+
+def _terminate(httpd):
+    httpd.shutdown()
+    os._exit(0)  # kill the whole process, not just the serve_forever thread
+
+
+def make_server(port):
+    """Bind and return a ThreadingHTTPServer for `port` (raises OSError if
+    the port is taken)."""
+    return ThreadingHTTPServer(("127.0.0.1", port), Handler)
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", type=int, default=8765)
     args = parser.parse_args()
-    server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
+    httpd = make_server(args.port)
     print(f"Serving on http://127.0.0.1:{args.port}  (Ctrl-C to stop)")
     try:
-        server.serve_forever()
+        httpd.serve_forever()
     except KeyboardInterrupt:
         print("\nBye")
 
