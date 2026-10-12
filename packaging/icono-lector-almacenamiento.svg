@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 190 190">
+<rect width="190" height="190" rx="42" fill="#14213D"/>
+<g transform="rotate(-90 95 95)" fill="none">
+<circle cx="95" cy="95" r="30" stroke="#F5A623" stroke-width="22" stroke-dasharray="100 188.5" stroke-dashoffset="0"/>
+<circle cx="95" cy="95" r="30" stroke="#2EC4B6" stroke-width="22" stroke-dasharray="50 188.5" stroke-dashoffset="-104"/>
+<circle cx="95" cy="95" r="30" stroke="#FF6B6B" stroke-width="22" stroke-dasharray="30.5 188.5" stroke-dashoffset="-158"/>
+<circle cx="95" cy="95" r="55" stroke="#F8C46A" stroke-width="20" stroke-dasharray="110 345.6" stroke-dashoffset="0"/>
+<circle cx="95" cy="95" r="55" stroke="#FBD9A0" stroke-width="20" stroke-dasharray="69 345.6" stroke-dashoffset="-114"/>
+<circle cx="95" cy="95" r="55" stroke="#7FDDD3" stroke-width="20" stroke-dasharray="93 345.6" stroke-dashoffset="-190"/>
+<circle cx="95" cy="95" r="55" stroke="#FFA3A3" stroke-width="20" stroke-dasharray="55 345.6" stroke-dashoffset="-290"/>
+<circle cx="95" cy="95" r="76" stroke="#FCE3BB" stroke-width="14" stroke-dasharray="150 477.5" stroke-dashoffset="0"/>
+<circle cx="95" cy="95" r="76" stroke="#B5EEE9" stroke-width="14" stroke-dasharray="127 477.5" stroke-dashoffset="-263"/>
+<circle cx="95" cy="95" r="76" stroke="#FFC9C9" stroke-width="14" stroke-dasharray="77 477.5" stroke-dashoffset="-400"/>
+</g>
+</svg>

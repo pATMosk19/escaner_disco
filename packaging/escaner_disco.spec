@@ -21,6 +21,7 @@ exe = EXE(
     name="Escáner de Disco",
     console=False,  # windowed: no terminal window
     upx=False,
+    icon=os.path.join(SPECPATH, "icon.icns"),
 )
 
 coll = COLLECT(exe, a.binaries, a.datas, upx=False, name="Escáner de Disco")
@@ -28,7 +29,7 @@ coll = COLLECT(exe, a.binaries, a.datas, upx=False, name="Escáner de Disco")
 app = BUNDLE(
     coll,
     name="Escáner de Disco.app",
-    icon=None,  # pending: add an .icns
+    icon=os.path.join(SPECPATH, "icon.icns"),
     bundle_identifier="com.pATMosk19.escanerdisco",
     info_plist={"NSHighResolutionCapable": True},
 )
