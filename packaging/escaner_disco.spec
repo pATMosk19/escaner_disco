@@ -9,6 +9,7 @@ a = Analysis(
     [os.path.join(ROOT, "app_main.py")],
     pathex=[ROOT],
     datas=[(os.path.join(ROOT, "static"), "static")],
+    hiddenimports=["webview.platforms.cocoa"],
 )
 pyz = PYZ(a.pure)
 

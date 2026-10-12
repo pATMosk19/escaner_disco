@@ -4,9 +4,11 @@
 Runs with --windowed under PyInstaller: there is no console, so stdout/stderr
 are redirected to a log file before anything else can fail invisibly. Starts
 server.py's HTTP server in a background thread, waits for it to answer, then
-opens the browser on it. server.py itself still runs standalone exactly as in
-S10 (`python3 server.py`); this file only adds what a double-clickable app
-needs on top: picking a free port, logging, and opening the browser.
+opens a native pywebview window on it; closing the window ends the process.
+server.py itself still runs standalone exactly as in S10 (`python3 server.py`);
+this file only adds what a double-clickable app needs on top: picking a free
+port, logging, and the native window. pywebview is a build-only dependency,
+imported lazily so the core stays stdlib-only.
 """
 
 import os
@@ -14,13 +16,13 @@ import socket
 import sys
 import threading
 import time
-import webbrowser
 
 import server
 
 FIRST_PORT = 8765
 LAST_PORT = 8775
 READY_TIMEOUT = 5.0  # seconds to wait for the server to answer
+WINDOW_TITLE = "Lector de Almacenamiento"
 
 
 def _setup_logging():
@@ -76,11 +78,13 @@ def main():
         sys.exit(1)
 
     print(f"escaner_disco: serving on http://127.0.0.1:{port}/")
-    webbrowser.open(f"http://127.0.0.1:{port}/")
+    import webview  # lazy: build-only dependency, see requirements-build.txt
+    webview.create_window(WINDOW_TITLE, f"http://127.0.0.1:{port}/",
+                          width=1280, height=860, min_size=(900, 600))
+    webview.start()  # blocks until the window is closed
 
-    # Stay alive until /api/quit terminates the process (os._exit, see
-    # server.py); the server thread only returns once shutdown() is called.
-    thread.join()
+    # Window closed: the server thread is a daemon, so returning ends the
+    # process (/api/quit still works and exits via os._exit, see server.py).
 
 
 if __name__ == "__main__":
