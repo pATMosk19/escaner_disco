@@ -18,7 +18,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name="Escáner de Disco",
+    name="Escaner de Disco",  # ASCII: an accented executable name breaks codesign --strict
     console=False,  # windowed: no terminal window
     upx=False,
     icon=os.path.join(SPECPATH, "icon.icns"),
@@ -31,5 +31,9 @@ app = BUNDLE(
     name="Escáner de Disco.app",
     icon=os.path.join(SPECPATH, "icon.icns"),
     bundle_identifier="com.pATMosk19.escanerdisco",
-    info_plist={"NSHighResolutionCapable": True},
+    info_plist={
+        "NSHighResolutionCapable": True,
+        "CFBundleName": "Escáner de Disco",
+        "CFBundleDisplayName": "Escáner de Disco",
+    },
 )
